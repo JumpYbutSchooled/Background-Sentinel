@@ -17,7 +17,16 @@ from ctypes import wintypes
 from PySide6.QtCore import QObject, QRectF, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
-from . import APP_NAME, APP_SLUG, APP_VERSION, DEFAULT_HOTKEY, autostart, commands, desktop
+from . import (
+    APP_NAME,
+    APP_SLUG,
+    APP_VERSION,
+    DEFAULT_HOTKEY,
+    autostart,
+    commands,
+    desktop,
+    windowless,
+)
 from .config import settings
 from .timers import timers
 from .hotkey import GlobalHotkey, HotkeyError
@@ -284,11 +293,18 @@ def _set_app_user_model_id() -> None:
 
 
 def main() -> int:
-    setup_logging()
-
     if sys.platform != "win32":
         print("Background Sentinel targets Windows.", file=sys.stderr)
         return 1
+
+    # First, before the log file is opened or the mutex taken: this process may
+    # be about to be replaced by a windowless one, and two of them holding
+    # either would be two of them to clean up after. Run with `--console` (or
+    # `SENTINEL_CONSOLE=1`) to stay attached and watch it print.
+    if windowless.hand_off():
+        return 0
+
+    setup_logging()
 
     guard = SingleInstance(f"{APP_SLUG}.daemon")
     if guard.already_running:
