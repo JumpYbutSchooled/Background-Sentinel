@@ -105,4 +105,4 @@ The default hotkey is `ctrl+shift+space`, set in `sentinel/__init__.py`. If `Reg
 
 ## Status
 
-Version 0.1.0. Works from source; not yet packaged as an `.exe`.
+Version 1.0.0, im THINKING about packaging it as an `exe` seperately, but this was designed for use on a school laptop which sometimes dosent support `exe`.
