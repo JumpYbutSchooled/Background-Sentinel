@@ -236,6 +236,12 @@ BRANCH_JOINT = 1.6
 # waveform, so they stutter on rather than fading.
 DIAL_STRIKE = (0.52, 0.66)
 NODE_STRIKE_FROM = 0.64
+#: Longest gap between one branch striking and the next. A ceiling, not the
+#: figure used: the cascade has to *finish* inside the intro, so with enough
+#: branches to overrun it they are dealt out faster instead. At the tuned step
+#: the ninth root branch would not start until the opening was already over,
+#: which is precisely as visible as it sounds — it never struck on at all, and
+#: appeared at full brightness the moment the phase changed.
 NODE_STRIKE_STEP = 0.055
 NODE_STRIKE_LEN = 0.13
 
@@ -1377,8 +1383,9 @@ class NavigatorWindow(QWidget):
 
         if self._phase == Phase.INTRO:
             # The dial strikes on first, then each branch in turn.
-            for i, (rect, corner) in enumerate(self._node_shapes(len(node.children))):
-                lit = self._strike_alpha(self._node_strike(i)) * alpha
+            count = len(node.children)
+            for i, (rect, corner) in enumerate(self._node_shapes(count)):
+                lit = self._strike_alpha(self._node_strike(i, count)) * alpha
                 if lit <= 0.0:
                     continue
                 self._paint_branches(painter, node, lit, 1.0, None, only=i)
@@ -1487,8 +1494,18 @@ class NavigatorWindow(QWidget):
 
     # -- opening stagger -----------------------------------------------------
 
-    def _node_strike(self, index: int) -> tuple[float, float]:
-        start = NODE_STRIKE_FROM + index * NODE_STRIKE_STEP
+    def _node_strike(self, index: int, count: int) -> tuple[float, float]:
+        """When branch `index` of `count` strikes on, as a slice of the intro.
+
+        The step is squeezed to fit rather than fixed. A branch whose window
+        has not opened by the time the intro ends is a branch that never
+        flickers on — it simply appears, fully lit, when the phase changes —
+        so the last one's window has to close on the intro's last frame, not
+        after it.
+        """
+        room = max(0.0, 1.0 - NODE_STRIKE_FROM - NODE_STRIKE_LEN)
+        step = min(NODE_STRIKE_STEP, room / max(1, count - 1))
+        start = NODE_STRIKE_FROM + index * step
         return start, start + NODE_STRIKE_LEN
 
     def _strike_alpha(self, window: tuple[float, float]) -> float:
