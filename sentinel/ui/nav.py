@@ -152,16 +152,27 @@ BAR_TOP_Y = LINE_H / 2.0
 # ---------------------------------------------------------------- animation
 
 #: Baselines, scaled through `ms()` at the moment an animation starts so the
-#: speed setting applies immediately.
+#: speed setting applies immediately. The named speeds in `config.py` are
+#: calibrated against these, so shortening one here does not make the journey
+#: better — it silently redefines what "cinematic" means.
 OPEN_BASE = 4800
 #: Escape does not replay the journey backwards — it takes the short way home,
 #: so closing is deliberately brisk next to opening.
 CLOSE_BASE = 1080
 
-#: Ease-in-out over the whole journey, on top of the per-leg smootherstep.
-#: Sine is the gentlest of the in-out family, which suits a 4.8s move.
-OPEN_EASING = QEasingCurve.Type.InOutSine
-CLOSE_EASING = QEasingCurve.Type.InOutSine
+#: Linear, because the legs below already carry the easing — see the comment
+#: under this one, which has always said so.
+#:
+#: This used to be InOutSine, which meant every leg was eased twice: once by
+#: the curve on the driving animation and again by its own smootherstep. The
+#: cost lands entirely at the two ends of the journey, and it scales with the
+#: duration. At `cinematic` the capsule was under a tenth of the way balled up
+#: after nine hundred milliseconds — not a gentle start but a dead one, and it
+#: read as the card having hung. Driven linearly the same leg is a tenth of the
+#: way in by 270ms, and smootherstep still takes its first and second
+#: derivatives to zero at both ends, so nothing jerks at a handover.
+OPEN_EASING = QEasingCurve.Type.Linear
+CLOSE_EASING = QEasingCurve.Type.Linear
 
 # Windows along the journey, as fractions of `intro`. The animation driving
 # `intro` is linear; every curve is shaped here instead, on smootherstep, whose

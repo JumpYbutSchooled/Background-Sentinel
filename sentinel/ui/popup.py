@@ -1,6 +1,6 @@
-"""The summoned command popup.
+﻿"""The summoned command popup.
 
-Created once and shown/hidden, not rebuilt per summon — a launcher has to feel
+Created once and shown/hidden, not rebuilt per summon â€” a launcher has to feel
 instant, and constructing a Qt window on every hotkey press would add visible
 latency. Phase 7 replaces the single input line with a scrolling terminal
 transcript; the submitted/hide behaviour here should survive that change.
@@ -10,8 +10,16 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
-from PySide6.QtGui import QCursor, QGuiApplication, QKeyEvent, QTextCursor
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QCursor,
+    QGuiApplication,
+    QKeyEvent,
+    QPainter,
+    QPixmap,
+    QRegion,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -48,7 +56,7 @@ CARD_CORNER = 10
 
 #: The card's own padding. Named rather than left inline in the layout call
 #: because the navigator lays the scroll-back out to these same numbers while
-#: it is morphing into and out of the card — the two have to agree to the pixel.
+#: it is morphing into and out of the card â€” the two have to agree to the pixel.
 CARD_PAD_X = 16
 CARD_PAD_TOP = 12
 CARD_PAD_BOTTOM = 10
@@ -57,18 +65,22 @@ CARD_SPACING = 4
 #: The card is a fixed width, so everything on it is laid out against this.
 CARD_W = 640
 
+#: How long the card's contents take to die out when handing over to the
+#: overlay. Deliberately shorter than a normal flicker: see `_content_flicker`.
+HANDOFF_BASE = 200
+
 #: How far down the screen the prompt row sits, as a fraction of the available
 #: height. The card grows around this point rather than from its own top edge.
 ANCHOR = 0.26
 #: How far down the prompt may be pushed to make room for history above it.
-#: Past this the card stops moving and the scroll-back scrolls instead — a
+#: Past this the card stops moving and the scroll-back scrolls instead â€” a
 #: prompt hunting around the middle of the screen is worse than one that sits
 #: low and lets you wind the history back.
 ANCHOR_MAX = 0.52
 #: Clearance kept between a tall card and the top of the screen.
 SCROLL_TOP_MARGIN = 12
-#: The same, at the bottom. Whatever hangs below the prompt — the suggestion
-#: list, the status line — has to clear the edge of the screen too.
+#: The same, at the bottom. Whatever hangs below the prompt â€” the suggestion
+#: list, the status line â€” has to clear the edge of the screen too.
 SCROLL_BOTTOM_MARGIN = 16
 #: How far a pushed-down prompt lifts back up once there is something typed on
 #: it. Three rows: enough to be seen happening and to keep the line you are
@@ -92,7 +104,7 @@ CARD_CONTENT_TOP = float(CARD_BORDER_W + CARD_PAD_TOP)
 CARD_PROMPT_X = CARD_CONTENT_X
 CARD_INPUT_X = 107.0
 CARD_PROMPT_DY = -3.0  # prompt baseline, relative to the prompt row's centre
-PLACEHOLDER = "type a command…"
+PLACEHOLDER = "type a commandâ€¦"
 
 _FONT = '"JetBrains Mono", "Cascadia Mono", Consolas, monospace'
 
@@ -134,7 +146,7 @@ def build_stylesheet() -> str:
 
 
 def _shape(line: str) -> str:
-    """A status line with its numbers removed — what it is, not what it says.
+    """A status line with its numbers removed â€” what it is, not what it says.
 
     Lets a ticking countdown be told apart from a genuinely different reading,
     which is the difference between updating text and striking a line on.
@@ -142,10 +154,126 @@ def _shape(line: str) -> str:
     return "".join(ch for ch in line if not ch.isdigit())
 
 
+class ContentPane(QWidget):
+    """Everything the card holds, and the thing that dies out inside it.
+
+    For the length of a hand-over this stops being a live widget tree and
+    becomes a still of itself, fading out. A `QGraphicsOpacityEffect` says that
+    in one line and was what this used to do â€” but Qt renders an effect's
+    subtree through an offscreen pixmap while the window's own painter is
+    active, and on a translucent always-on-top window the two collide:
+
+        QPainter::begin: A paint device can only be painted by one painter
+        QPainter::translate: Painter not active
+
+    A painter that fails to begin draws nothing and says nothing to the code
+    that asked, so the frame it was drawing is silently dropped. That is one
+    lost frame at the start of every hand-over, and 466 of these in the log.
+
+    A still is not an approximation of the live tree here. `_freeze` has
+    already stopped the frame clock, pinned the size and refused new history
+    precisely so that nothing in the card can change while it fades â€” so the
+    grab holds the same pixels the widgets would have drawn, and it costs one
+    grab instead of an offscreen render on every repaint.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._still: QPixmap | None = None
+        self._alpha = 1.0
+        #: The children that were showing when the still was taken. Only these
+        #: come back: an emptied scroll-back and a shut suggestion box are
+        #: hidden on purpose, and showing them again would put a gap in the
+        #: card that the layout had already taken out.
+        self._was_visible: list[QWidget] = []
+        #: The pane's own size constraints, put back when the still is dropped.
+        #: Saved rather than reset to a known default: the pane is free-sized
+        #: today, but a future minimum here would be silently thrown away.
+        self._size_limits: tuple[QSize, QSize] | None = None
+
+    @property
+    def stilled(self) -> bool:
+        return self._still is not None
+
+    @property
+    def alpha(self) -> float:
+        """How lit the contents are. 1.0 whenever nothing is fading."""
+        return self._alpha if self._still is not None else 1.0
+
+    def set_alpha(self, value: float) -> None:
+        if self._still is None:
+            return
+        self._alpha = value
+        self.update()
+
+    def _take_still(self) -> QPixmap:
+        """The live tree, rendered onto transparency.
+
+        Not `grab()`. That allocates a pixmap it does not clear and renders the
+        widget's background into it â€” and this pane has no background: the
+        card's dark fill belongs to the QFrame behind it and is supposed to
+        show through. Grabbing produced a still with a bright slab where that
+        fill should have been, which then faded out over the top of the card.
+        Rendering children only, onto transparency, keeps the fill the card's.
+        """
+        ratio = self.devicePixelRatioF()
+        still = QPixmap(
+            max(1, int(self.width() * ratio)), max(1, int(self.height() * ratio))
+        )
+        still.setDevicePixelRatio(ratio)
+        still.fill(Qt.GlobalColor.transparent)
+        self.render(
+            still, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren
+        )
+        return still
+
+    def hold_still(self) -> None:
+        """Take the still and stand the live tree down behind it."""
+        if self._still is not None:
+            return
+        self._still = self._take_still()
+        self._alpha = 1.0
+        # Pinned before the children go, not after: this pane is laid out to
+        # them, and one that shrank to nothing would take the card's height
+        # with it â€” which is the one thing a freeze exists to prevent.
+        self._size_limits = (self.minimumSize(), self.maximumSize())
+        self.setFixedSize(self.size())
+        self._was_visible = [
+            child for child in self.children()
+            if isinstance(child, QWidget) and child.isVisible()
+        ]
+        for child in self._was_visible:
+            child.hide()
+        self.update()
+
+    def release(self) -> None:
+        """Drop the still and let the live tree draw again."""
+        if self._still is None:
+            return
+        self._still = None
+        self._alpha = 1.0
+        if self._size_limits is not None:
+            minimum, maximum = self._size_limits
+            self.setMinimumSize(minimum)
+            self.setMaximumSize(maximum)
+            self._size_limits = None
+        for child in self._was_visible:
+            child.show()
+        self._was_visible = []
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if self._still is None:
+            return
+        painter = QPainter(self)
+        painter.setOpacity(self._alpha)
+        painter.drawPixmap(0, 0, self._still)
+
+
 class CommandEdit(QTextEdit):
     """A one-line editor that can colour its own text.
 
-    QLineEdit cannot show per-character colour — it has no QTextDocument for a
+    QLineEdit cannot show per-character colour â€” it has no QTextDocument for a
     highlighter to attach to. A QTextEdit restrained to a single line is the
     standard way round that, and keeps a real cursor and selection.
     """
@@ -202,7 +330,7 @@ class CommandEdit(QTextEdit):
             self.navigated.emit(-1)
             return
         # The arrows already drive the suggestion list, so history gets the
-        # page keys — the one pair a single-line editor has no use for.
+        # page keys â€” the one pair a single-line editor has no use for.
         if key == Qt.Key.Key_PageUp:
             self.scrolled.emit(PAGE_ROWS)
             return
@@ -246,20 +374,15 @@ class PopupWindow(QWidget):
         card_layout.setSpacing(CARD_SPACING)
 
         # Everything the card holds lives in one child, so it can be flickered
-        # off *inside* the card — the border and fill stay lit while the
+        # off *inside* the card â€” the border and fill stay lit while the
         # contents go dark. That is what lets the overlay take over a card that
         # is the shape it was, only empty.
-        self._content = QWidget(card)
+        self._content = ContentPane(card)
         card_layout.addWidget(self._content)
         content_layout = QVBoxLayout(self._content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(CARD_SPACING)
         self._content_layout = content_layout
-        # The effect is installed only for the hand-over, not for the life of
-        # the card: a graphics effect makes Qt render the whole subtree through
-        # an offscreen pixmap on every repaint, and this one repaints on every
-        # keystroke and every animation frame.
-        self._content_fade: QGraphicsOpacityEffect | None = None
 
         # History above the prompt, terminal-fashion. The window is positioned
         # from the prompt row rather than the card's top edge (see
@@ -311,31 +434,40 @@ class PopupWindow(QWidget):
 
         # The hand-over to the overlay: the contents die out inside a card that
         # does not move. Whatever is waiting on that runs when it is dark.
-        self._content_flicker = Flicker(self._set_content_opacity, self)
+        # On its own baseline, and a short one. Nothing *else* is on screen
+        # while this runs â€” the card is holding still by design and its contents
+        # have gone â€” so every millisecond of it is a millisecond of empty box
+        # before the overlay picks the shape up. It is a beat, not a transition.
+        self._content_flicker = Flicker(
+            self._set_content_opacity, self, baseline=HANDOFF_BASE
+        )
         self._content_flicker.finished.connect(self._on_content_dark)
         self._handoff: Callable[[], None] | None = None
         #: While set, the card holds its size and position and takes no new
         #: content. See `hand_off`.
         self._frozen = False
+        #: The scroll-back's measured height at the moment of a freeze, held so
+        #: that `prompt_rise` still describes the card the overlay can see.
+        self._frozen_scrollback: int | None = None
 
         # One frame clock for the whole card. Everything that can change size
         # or position chases its target through this rather than jumping:
         # the scroll-back, the suggestion box, the card itself and the window
         # under it. Stopped the moment it all settles, so an idle prompt costs
-        # nothing — and stopped outright while the card is not on screen.
+        # nothing â€” and stopped outright while the card is not on screen.
         self._ticker = Ticker(self)
         self._ticker.tick.connect(self._advance)
 
         # Where the prompt row sits down the screen, and where it is heading.
-        # It moves for two reasons — history piling up above it, and a line
-        # being typed on it — so it is chased like everything else rather than
+        # It moves for two reasons â€” history piling up above it, and a line
+        # being typed on it â€” so it is chased like everything else rather than
         # teleporting: a card that jumps down the screen the moment a command
         # prints reads as a different window opening. `None` means "not placed
         # yet"; the first placement snaps.
         self._anchor: float | None = None
         self._anchor_target = 0.0
 
-        # The echo line carries what the daemon is holding — a running timer,
+        # The echo line carries what the daemon is holding â€” a running timer,
         # something due. Command results used to live here too and no longer
         # do: they go into the scroll-back above, where the last ten of them
         # stay readable instead of each one wiping the one before. Ticked once
@@ -352,13 +484,13 @@ class PopupWindow(QWidget):
         self.completer.dismiss()
         # Whatever hand-over left the card frozen and dark is over.
         self._thaw()
-        # Snapped, not chased: the card is arriving, and the whole of it —
-        # history included — strikes on together. Sliding its contents into
+        # Snapped, not chased: the card is arriving, and the whole of it â€”
+        # history included â€” strikes on together. Sliding its contents into
         # place *while* it flickers in would read as two separate events. The
         # anchor goes with them: wherever the card was pushed to last time, it
         # is summoned at the position this much history calls for.
         self._anchor = None
-        # Same order as `handover`, for the same reasons — the flicker hides
+        # Same order as `handover`, for the same reasons â€” the flicker hides
         # a card that re-measures itself once it is up, it does not excuse one.
         self._recolour()
         self._show_status()
@@ -380,13 +512,13 @@ class PopupWindow(QWidget):
         # Whatever hand-over left the card frozen and dark is over.
         self._thaw()
         # Snapped for the same reason the opacity is: the overlay's last frame
-        # has already drawn this card at full size, history and all — and a
+        # has already drawn this card at full size, history and all â€” and a
         # card that then slid down the screen would undo the handover.
         self._anchor = None
         # Everything that can change the card's size or its colour happens
         # before it is on screen, and in that order. The accent may have been
         # swept while the card was away and its stylesheet holds a colour
-        # rather than a reference to one — but re-styling a window that is
+        # rather than a reference to one â€” but re-styling a window that is
         # already up re-polishes the whole tree in front of the user, and a
         # status line set after the measuring shows the card at a height that
         # does not account for it. Between them that is the pair of empty
@@ -414,7 +546,7 @@ class PopupWindow(QWidget):
     def hand_off(self, done: Callable[[], None]) -> None:
         """Empty the card, then hand its shape to whatever comes next.
 
-        The contents die out *inside* the card — the fill and the border stay
+        The contents die out *inside* the card â€” the fill and the border stay
         lit and the card does not move a pixel while it happens. What the
         overlay then takes over is the shape that was actually on screen, and
         it balls that up: it never snaps back to the bare one-line prompt
@@ -428,13 +560,12 @@ class PopupWindow(QWidget):
         self._content_flicker.douse()
 
     def _set_content_opacity(self, value: float) -> None:
-        if self._content_fade is not None:
-            self._content_fade.setOpacity(value)
+        self._content.set_alpha(value)
 
     @property
     def content_opacity(self) -> float:
         """How lit the card's contents are. 1.0 whenever nothing is fading."""
-        return 1.0 if self._content_fade is None else self._content_fade.opacity()
+        return self._content.alpha
 
     def _on_content_dark(self) -> None:
         if self._handoff is None or self.content_opacity > 0.01:
@@ -443,12 +574,12 @@ class PopupWindow(QWidget):
         done()
 
     def _freeze(self) -> None:
-        """Hold the card exactly as it is — size, position and contents.
+        """Hold the card exactly as it is â€” size, position and contents.
 
         Settled first, and that is not housekeeping. Submitting cleared the
         input, which sets the suggestion box folding shut and lets the anchor
         drift back to where a prompt at rest belongs. Both are chases, driven
-        by the frame clock this is about to stop — so freezing on top of them
+        by the frame clock this is about to stop â€” so freezing on top of them
         held a size that was still on its way somewhere, and the card visibly
         shrank *under* the hand-over flicker, which is the one thing this is
         supposed to hold still.
@@ -469,21 +600,28 @@ class PopupWindow(QWidget):
         self._frozen = True
         self._ticker.stop()
         self.scrollback.frozen = True
-        if self._content_fade is None:
-            self._content_fade = QGraphicsOpacityEffect(self._content)
-            self._content_fade.setOpacity(1.0)
-            self._content.setGraphicsEffect(self._content_fade)
+        # Measured before the still is taken, and kept. Taking it stands the
+        # live children down, and `_scrollback_height` asks the scroll-back
+        # whether it is hidden â€” which it then is, for a card that is still
+        # showing every row of it. The overlay calls `prompt_rise` *after* this
+        # has run and puts "sentinel>" exactly where the answer says, so an
+        # emptied measurement here is a visibly snapped handover.
+        self._frozen_scrollback = self._scrollback_height()
+        # Last, and after the ticker has stopped: the still has to be taken of
+        # a card that has finished moving, which is what everything above this
+        # line is for.
+        self._content.hold_still()
 
     def _thaw(self) -> None:
         self._frozen = False
         self._handoff = None
         self.scrollback.frozen = False
-        # Stop before detaching: `setGraphicsEffect(None)` destroys the effect,
-        # and a flicker still running would be writing to a dead object.
+        # Stop before releasing: a flicker still running would set an alpha on
+        # a pane that has already gone back to drawing its live children, and
+        # the first thing the card does after this is re-measure itself.
         self._content_flicker.stop()
-        if self._content_fade is not None:
-            self._content_fade = None
-            self._content.setGraphicsEffect(None)
+        self._frozen_scrollback = None
+        self._content.release()
 
     # ------------------------------------------------------------ suggestions
 
@@ -510,7 +648,7 @@ class PopupWindow(QWidget):
         self._sync_suggestions()
 
     def _wake(self) -> None:
-        """Something changed shape — run the frame clock until it settles."""
+        """Something changed shape â€” run the frame clock until it settles."""
         if self._frozen:
             return
         if self.isVisible() and not self._ticker.running:
@@ -524,7 +662,7 @@ class PopupWindow(QWidget):
         moving |= self._advance_anchor(delta)
         if advance_accent(delta):
             # Normally the overlay finishes the sweep, since that is where the
-            # accent gets changed. This is the case where it did not — the card
+            # accent gets changed. This is the case where it did not â€” the card
             # picks the sweep up rather than leaving it stranded half-way.
             self._recolour()
             moving = True
@@ -560,7 +698,7 @@ class PopupWindow(QWidget):
             area = screen.availableGeometry()
         # However much history there is, the card may not grow past the top of
         # the screen. So the scroll-back is capped at the room actually above
-        # the anchor — and, now that it scrolls, what will not fit is parked
+        # the anchor â€” and, now that it scrolls, what will not fit is parked
         # rather than lost.
         self.scrollback.limit = self._room_above(self._anchor, area)
         x = area.x() + (area.width() - self.width()) // 2
@@ -568,7 +706,12 @@ class PopupWindow(QWidget):
         # pushed up by exactly as much history as it is carrying, so the prompt
         # holds still and the handover rectangle never moves either.
         top = int(round(self._anchor)) - self._scrollback_height()
-        self.move(x, max(area.y(), top))
+        y = max(area.y(), top)
+        # Same reasoning as the resize in `_remeasure`: this is called every
+        # frame the anchor is chasing, and the anchor spends most of that chase
+        # rounding to the pixel it is already on.
+        if (x, y) != (self.x(), self.y()):
+            self.move(x, y)
 
     def _sync_suggestions(self, snap: bool = False) -> None:
         """Take a new list, and start the card moving toward its new size."""
@@ -591,7 +734,14 @@ class PopupWindow(QWidget):
             if layout is not None:
                 layout.invalidate()
                 layout.activate()
-        self.resize(self.width(), self.sizeHint().height())
+        # Only when it actually changed. This runs on every frame of every
+        # chase, and the scroll-back's height creeps toward its target in
+        # fractions of a pixel â€” so most frames ask for the height the window
+        # already has. Resizing a translucent, always-on-top window is not free
+        # and it is not atomic with the move below it.
+        height = self.sizeHint().height()
+        if height != self.height():
+            self.resize(self.width(), height)
         self._move_to_active_screen()
 
     def _on_setting_changed(self, key: str, value: object) -> None:
@@ -608,7 +758,7 @@ class PopupWindow(QWidget):
         self.setStyleSheet(build_stylesheet())
         self.input.highlighter.rehighlight()
         # The scroll-back reads the accent at paint time, so a repaint is all
-        # it needs — but it does need one; nothing else invalidates it.
+        # it needs â€” but it does need one; nothing else invalidates it.
         self.scrollback.update()
 
     def toggle(self) -> None:
@@ -623,9 +773,11 @@ class PopupWindow(QWidget):
         `isHidden`, not `isVisible`: the card is measured and positioned while
         the window itself is still hidden, on the way up from `summon()`. That
         makes every child un-*visible* but only an emptied scroll-back
-        *hidden* — which is the same test the layout uses to decide whether the
+        *hidden* â€” which is the same test the layout uses to decide whether the
         row is there at all.
         """
+        if self._frozen_scrollback is not None:
+            return self._frozen_scrollback
         if self.scrollback.isHidden():
             return 0
         return self.scrollback.height() + self._content_layout.spacing()
@@ -633,8 +785,8 @@ class PopupWindow(QWidget):
     def prompt_rise(self) -> float:
         """How far the prompt row's centre sits above the card's bottom edge.
 
-        The navigator morphs out of the *whole* card — history included, or the
-        shape would snap the moment the overlay took over — so it cannot assume
+        The navigator morphs out of the *whole* card â€” history included, or the
+        shape would snap the moment the overlay took over â€” so it cannot assume
         the prompt is at the middle of what it is drawing. This is the one
         number it needs to put "sentinel>" back where the popup had it.
         """
@@ -650,7 +802,7 @@ class PopupWindow(QWidget):
 
         Three pulls, in order. It rests at `ANCHOR`. History that will not fit
         above it pushes it down the screen rather than being thrown away at the
-        top edge — as far as `ANCHOR_MAX`, past which the scroll-back scrolls
+        top edge â€” as far as `ANCHOR_MAX`, past which the scroll-back scrolls
         instead. And a line being typed lifts it back up, so the line you are
         writing and the suggestions under it are not left crammed against the
         bottom of the screen.
@@ -666,7 +818,7 @@ class PopupWindow(QWidget):
             push = max(0.0, push - TYPING_LIFT)
         anchor = base + push
 
-        # Whatever hangs below the prompt has to clear the bottom edge too —
+        # Whatever hangs below the prompt has to clear the bottom edge too â€”
         # the suggestion list can be taller than the lift on a short screen.
         below = self.height() - self._scrollback_height()
         lowest = area.bottom() - below - SCROLL_BOTTOM_MARGIN
@@ -718,7 +870,7 @@ class PopupWindow(QWidget):
 
         A *new* reading strikes on rather than being swapped in place. A
         countdown losing a second is not a new reading, though, and flickering
-        the line once a second would be intolerable — so what is compared is
+        the line once a second would be intolerable â€” so what is compared is
         the shape of the text with its numbers taken out.
         """
         line = status.summary()

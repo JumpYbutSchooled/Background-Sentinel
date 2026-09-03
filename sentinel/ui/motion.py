@@ -161,10 +161,15 @@ class Ticker(QObject):
             self._timer.setInterval(frame_interval())
 
 
-#: Striking on: dark, a couple of false starts, then lit.
+#: Striking on: dark, a couple of false starts, then lit. False starts belong
+#: here — a tube that catches, drops and catches again is what striking on
+#: looks like, and it is read as the thing arriving.
 ON_PATTERN = (0.0, 0.9, 0.1, 1.0, 0.25, 0.85, 0.55, 1.0)
-#: Dying out: lit, stuttering, then dark.
-OFF_PATTERN = (1.0, 0.0, 1.0, 0.3, 0.0, 0.85, 0.0, 0.25, 0.0)
+#: Dying out: lit, stuttering, then dark — but never *brighter* than the step
+#: before. Going out and coming back is not read as a tube dying; on the way
+#: out it is read as the window having failed to repaint, which is precisely
+#: what it looked like. The steps stay uneven, so the stutter survives.
+OFF_PATTERN = (1.0, 0.92, 0.34, 0.30, 0.11, 0.09, 0.02, 0.0)
 
 #: Baseline for a flicker; scaled through `ms()` each time one runs.
 FLICKER_BASE = 380

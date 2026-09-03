@@ -107,4 +107,19 @@ The default hotkey is `ctrl+shift+space`, set in `sentinel/__init__.py`. If `Reg
 
 ## Status
 
-Version 1.0.3, im THINKING about packaging it as an `exe` seperately, but this was designed for use on a school laptop which sometimes dosent support `exe`.
+Version 1.0.3. The packaged build is gone — no `build.ps1`, no PyInstaller spec, no `dist\`. Running from source is the one supported path again, as it was before. The executable could never run on the laptop this is written on: Defender Exploit Guard blocks any freshly built unsigned binary by administrator policy, and no PyInstaller setting changes that, so a build target that only worked on other people's machines was not worth the four hundred lines and the 45 MB.
+
+The motion has been debugged off a screen recording, without changing how long anything takes. Every baseline is where it was, so the named speeds still mean what they say.
+
+`intro` was being driven through an `InOutSine` curve *and* shaped again by each leg's own smootherstep — eased twice, exactly as the comment above the windows said it should not be. The cost is all at the two ends of the journey and it grows with the duration, so the slower speeds paid the most: at `cinematic` the capsule was under a tenth of the way balled up after nine hundred milliseconds. That is not a gentle opening, it is a dead one, and it read as the card having hung. The driving animation is linear now, as documented; smootherstep still takes both derivatives to zero at either end, so nothing jerks.
+
+Two smaller ones. `OFF_PATTERN` used to go dark, back to *full*, and dark again — a tube striking on may catch and drop, but on the way out it reads as a window that failed to repaint. It still stutters and never brightens. And the card no longer asks Windows to resize and move a translucent, always-on-top window on the many frames where neither number actually changed.
+
+Then the log turned out to be holding 466 of these, in pairs:
+
+```
+QPainter::begin: A paint device can only be painted by one painter at a time.
+QPainter::translate: Painter not active
+```
+
+One pair per hand-over. The card used to fade its contents with a `QGraphicsOpacityEffect`, and Qt renders an effect's subtree through an offscreen pixmap while the window's own painter is active — on a translucent always-on-top window the two collide, the effect's painter never begins, and the frame it was drawing is dropped without telling anyone. The contents are now held as a still and faded by hand, which is not an approximation: `_freeze` has already stopped the clock and pinned the size precisely so nothing in the card can change while it fades. It also costs one render instead of an offscreen pass per repaint, which the old code's own comment was already unhappy about.

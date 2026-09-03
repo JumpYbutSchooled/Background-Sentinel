@@ -2,7 +2,7 @@
 
 APP_NAME = "Background Sentinel"
 APP_SLUG = "BackgroundSentinel"
-APP_VERSION = "0.1.0"
+APP_VERSION = "1.0.3"
 
 # Default summon hotkey. Parsed by sentinel.hotkey.parse_hotkey().
 # Not ctrl+alt+space: that combination is already claimed on this machine and
