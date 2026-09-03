@@ -1,12 +1,4 @@
-"""Run-on-boot support via HKCU\\...\\CurrentVersion\\Run.
 
-HKCU rather than HKLM: no admin prompt, and a per-user daemon is what we want.
-
-Stubbed in the sense that it is wired to a tray toggle and works when running
-from source, but the command it writes is not final. Once there is a packaged
-.exe (Phase 9) `_launch_command` should just point at that, and the whole
-pythonw/script branch below can go away.
-"""
 
 from __future__ import annotations
 

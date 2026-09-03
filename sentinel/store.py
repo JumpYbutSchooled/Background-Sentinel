@@ -1,9 +1,3 @@
-"""Where Sentinel keeps its data, and how it reads and writes JSON.
-
-Every write goes to a temp file first and is then replaced into place. A daemon
-that runs all day will eventually be killed mid-write, and a half-written
-settings or notes file that fails to parse would lose the lot.
-"""
 
 from __future__ import annotations
 

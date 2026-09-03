@@ -1,9 +1,4 @@
-"""Todos and notes, held by the resident daemon and flushed to disk.
 
-Sentinel is already running all day, which is the whole reason quick capture
-belongs here rather than in a separate app: there is no launch cost and the
-list survives between summons.
-"""
 
 from __future__ import annotations
 

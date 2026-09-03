@@ -1,15 +1,4 @@
-"""Real machine control.
 
-Everything here goes through an OS interface rather than simulated typing into
-whatever window happens to be focused. Media and volume use SendInput with the
-dedicated virtual keys, which is what a keyboard's media row sends — the shell
-routes them to the right session, so they work with no window focused and
-without stealing focus.
-
-Per-application mixer control needs pycaw (declared in requirements.txt). It is
-imported lazily and every entry point reports honestly when it is missing,
-rather than pretending to have worked.
-"""
 
 from __future__ import annotations
 

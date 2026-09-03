@@ -1,9 +1,4 @@
-"""Logging + crash capture.
 
-A silent daemon crash is easy to miss, so everything goes to a rotating log
-file under %LOCALAPPDATA%\\BackgroundSentinel\\logs. Unhandled exceptions on the
-main thread, on worker threads, and inside Qt itself are all funnelled here.
-"""
 
 from __future__ import annotations
 

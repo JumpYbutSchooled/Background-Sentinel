@@ -1,8 +1,4 @@
-"""System tray icon — the persistent anchor for the daemon.
 
-Right now: summon, autostart toggle, open logs, quit. Phase 8 adds settings and
-a plugin list here.
-"""
 
 from __future__ import annotations
 

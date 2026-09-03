@@ -1,19 +1,4 @@
-"""The command tree the navigator renders.
 
-Built by walking the registry, which is what the first pass promised and never
-delivered. It matters for more than tidiness: the hand-written version had
-drifted, and was still offering `display` and `obs` branches for commands that
-were never implemented. A tree derived from the registry cannot lie about what
-exists, and a new command appears in the interface by being registered.
-
-A leaf names the `panel` that draws it. Most get `COMMAND`, which is a working
-view of the command — its forms, its completions, an argument line and a way to
-run it. A handful have richer views of their own: the launcher indexes the Start
-Menu, the notes panels read and write the notebook, settings writes settings.json.
-
-`eq=False` keeps dataclass identity semantics, so `children.index(node)` finds
-*that* node rather than the first one with matching fields.
-"""
 
 from __future__ import annotations
 

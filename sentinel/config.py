@@ -1,9 +1,4 @@
-"""User settings, persisted and live.
 
-Every entry here changes something real at runtime — there are no decorative
-switches. `Settings.changed` fires on every write so the UI can re-theme, retime
-or re-render without a restart.
-"""
 
 from __future__ import annotations
 

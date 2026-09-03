@@ -1,18 +1,4 @@
-"""The command registry: parsing, validity, and what each command does.
 
-This is the router the earlier phases kept promising. It owns three things the
-rest of the app asks it about:
-
-  * `tokenize()`  — how a line breaks into a command and its modifiers, which
-                    is what both command lines colour themselves from.
-  * `is_command()`— whether a word names something real, so the prompt can go
-                    green or red as you type.
-  * `run()`       — actually doing it.
-
-A command that needs a backend which is not installed stays *registered* and
-still highlights green; running it reports what is missing. Hiding it would be
-worse — you would type it, see red, and have no idea why.
-"""
 
 from __future__ import annotations
 

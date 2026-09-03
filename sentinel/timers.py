@@ -1,9 +1,4 @@
-"""Pomodoro and reminders, held by the resident daemon.
 
-The whole point of running all day is that a timer set at 10:00 still fires at
-10:25 with no window open. Nothing here touches the UI directly — it emits
-`fired`, and the daemon decides how to show it.
-"""
 
 from __future__ import annotations
 

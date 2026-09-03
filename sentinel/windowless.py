@@ -1,23 +1,4 @@
-"""Getting out from under the console.
 
-`python main.py` attaches a console window to the process, and that console is
-a way to kill the daemon: close it and Windows takes everything attached to it
-down with it. A resident daemon that dies when you tidy your desktop is not
-resident, so the console build does not stay the console build.
-
-It hands over instead. `pythonw.exe` sits next to `python.exe` in every CPython
-install and every virtualenv — the same interpreter built for the windows
-subsystem, so it gets no console at all — and this starts a detached copy of
-the program under it and returns. Whatever launched us (a terminal, an IDE's
-run button, a double click) gets its prompt straight back, and the process that
-survives has no console left to close.
-
-Nothing else in the daemon has to know: the two places that would have written
-to a console already check for one (`logging_setup` skips its stream handler
-and `SentinelApp._install_sigint_handler` skips the Ctrl+C plumbing when
-`sys.stderr` is `None`, which is what `pythonw` gives them), and `print()` to a
-`None` stdout is a no-op rather than an error.
-"""
 
 from __future__ import annotations
 

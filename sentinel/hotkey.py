@@ -1,17 +1,4 @@
-"""Global hotkey using the real Windows API.
 
-RegisterHotKey is used instead of a low-level keyboard hook (`keyboard`,
-`pynput`) for three reasons that matter for an always-resident daemon:
-
-  * no admin rights needed, and no global hook for antivirus to flag
-  * no extra thread, so the callback lands on the Qt GUI thread already
-  * Windows grants foreground-activation rights to a process whose registered
-    hotkey was just pressed, which is what lets the popup actually take focus
-
-RegisterHotKey(NULL, ...) posts WM_HOTKEY to the *thread* message queue rather
-than to a window. Qt's Windows event dispatcher pumps thread messages through
-installed native event filters, so a QAbstractNativeEventFilter sees them.
-"""
 
 from __future__ import annotations
 

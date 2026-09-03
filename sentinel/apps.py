@@ -1,13 +1,4 @@
-"""Finding and launching installed applications.
 
-Scans the Start Menu rather than the registry: the Start Menu is what the user
-actually sees, it already excludes uninstallers and update helpers, and the
-shortcut name is the name they know the program by.
-
-The walk touches a few thousand files, so it runs on a worker thread and caches
-its result. The UI never blocks on it — it renders whatever the index has and
-refreshes when the scan lands.
-"""
 
 from __future__ import annotations
 

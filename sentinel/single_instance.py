@@ -1,14 +1,4 @@
-"""Single-instance guard.
 
-Two daemons would fight over the global hotkey (the second RegisterHotKey call
-just fails), so refuse to start twice. A named mutex is the standard Windows
-way to do this and is released automatically if the process dies hard.
-
-The name lives in the "Local\\" namespace rather than "Global\\": Sentinel is a
-per-user daemon, so two different users signed in at once should each get their
-own instance instead of blocking one another. "Global\\" would also need
-SeCreateGlobalPrivilege, which a standard user does not always hold.
-"""
 
 from __future__ import annotations
 

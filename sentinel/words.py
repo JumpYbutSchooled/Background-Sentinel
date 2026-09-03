@@ -1,26 +1,4 @@
-"""Looking a word up without leaving the prompt.
 
-Two public sources, no keys, no dependency: `urllib` is already in the box and
-adding `requests` to buy nothing but a nicer call site would be a poor trade for
-a daemon that has to start in under a second.
-
-  * Datamuse   — definitions, parts of speech, synonyms, antonyms, rhymes,
-                 spellings, and a reverse dictionary, all off one endpoint.
-  * Wikipedia  — a paragraph on a *thing*, for when the question is not about
-                 a word at all.
-
-Datamuse rather than the obvious dictionaryapi.dev, which was tried first and
-measured: it answers in about twenty seconds when it answers, and times out
-about as often as not. Datamuse returns in a tenth of a second and carries the
-part of speech, the syllable count and a frequency figure alongside the
-definition, which is more than the dictionary was offering anyway. The one thing
-lost is usage examples, and a definition you get now beats an example you get
-after twenty seconds of a frozen prompt.
-
-Nothing here touches Qt and nothing here is guaranteed fast — every call blocks
-on a socket. Callers run it off the UI thread; see `Result.pending` in
-`sentinel.commands` for the arrangement that makes that automatic.
-"""
 
 from __future__ import annotations
 

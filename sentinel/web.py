@@ -1,15 +1,4 @@
-"""Turning what you typed into somewhere to go.
 
-One prompt, two intents. `search claude api pricing` is a question; `claude.ai`
-is an address. Telling them apart is the whole job of this module, and it has to
-be *predictable* — a rule that guesses differently depending on the day is worse
-than one that occasionally makes you type `https://`.
-
-The rule: a scheme, a `www.` prefix, a bare host with a recognised suffix, or
-localhost/an IP is an address. Everything else is a query. That is deliberately
-conservative about bare hosts — `search config.py` and `search 3.5 mm jack`
-should look things up, not try to open a website.
-"""
 
 from __future__ import annotations
 

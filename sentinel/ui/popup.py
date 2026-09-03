@@ -358,15 +358,15 @@ class PopupWindow(QWidget):
         # anchor goes with them: wherever the card was pushed to last time, it
         # is summoned at the position this much history calls for.
         self._anchor = None
+        # Same order as `handover`, for the same reasons — the flicker hides
+        # a card that re-measures itself once it is up, it does not excuse one.
+        self._recolour()
+        self._show_status()
         self._sync_suggestions(snap=True)
         self.setWindowOpacity(0.0)
-        self._show_status()
         self.show()
         self.input.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         force_foreground(self)
-        # The accent may have been swept while the card was away, and its
-        # stylesheet holds a colour rather than a reference to one.
-        self._recolour()
         self._flicker.light()
 
     def handover(self) -> None:
@@ -383,15 +383,21 @@ class PopupWindow(QWidget):
         # has already drawn this card at full size, history and all — and a
         # card that then slid down the screen would undo the handover.
         self._anchor = None
+        # Everything that can change the card's size or its colour happens
+        # before it is on screen, and in that order. The accent may have been
+        # swept while the card was away and its stylesheet holds a colour
+        # rather than a reference to one — but re-styling a window that is
+        # already up re-polishes the whole tree in front of the user, and a
+        # status line set after the measuring shows the card at a height that
+        # does not account for it. Between them that is the pair of empty
+        # frames the handover used to open with.
+        self._recolour()
+        self._show_status()
         self._sync_suggestions(snap=True)
         self.setWindowOpacity(1.0)
-        self._show_status()
         self.show()
         self.input.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         force_foreground(self)
-        # The accent may have been swept while the card was away, and its
-        # stylesheet holds a colour rather than a reference to one.
-        self._recolour()
 
     def dismiss(self) -> None:
         """Flicker out, then hide once dark."""
@@ -437,7 +443,29 @@ class PopupWindow(QWidget):
         done()
 
     def _freeze(self) -> None:
-        """Hold the card exactly as it is — size, position and contents."""
+        """Hold the card exactly as it is — size, position and contents.
+
+        Settled first, and that is not housekeeping. Submitting cleared the
+        input, which sets the suggestion box folding shut and lets the anchor
+        drift back to where a prompt at rest belongs. Both are chases, driven
+        by the frame clock this is about to stop — so freezing on top of them
+        held a size that was still on its way somewhere, and the card visibly
+        shrank *under* the hand-over flicker, which is the one thing this is
+        supposed to hold still.
+
+        Everything downstream inherited that half-way rectangle: it is what the
+        overlay balls up, and what its outro folds back into at the end. The
+        popup that then takes over has long since finished the fold, so it
+        landed a row short of the card the overlay had just drawn, and the
+        handover snapped in exactly the place it was built not to.
+        """
+        self.suggestions.sync(snap=True)
+        self.scrollback.settle()
+        self._remeasure()
+        if self._anchor is not None:
+            self._anchor = self._anchor_target
+            self._reposition()
+
         self._frozen = True
         self._ticker.stop()
         self.scrollback.frozen = True

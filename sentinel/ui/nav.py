@@ -615,13 +615,19 @@ class NavigatorWindow(QWidget):
 
     def _finish_dismiss(self) -> None:
         self._phase = Phase.HIDDEN
-        self._intro_v = 0.0
         # Hand the prompt back *before* hiding. Hiding first would leave a
         # frame with neither window on screen, which reads as a blink.
         if self._hand_back:
             self.closed.emit()
-        self._outro_v = 0.0
         self.hide()
+        # Reset only once we are off screen. Both of these repaint, and at zero
+        # the paint they ask for is the bare origin rectangle with nothing
+        # inside it — no prompt and no history, since both arrive right at the
+        # end of the opening. Asking for that while the window was still up is
+        # what put an empty card between the overlay's last frame and the
+        # popup's first, at the very seam the outro exists to hide.
+        self._intro_v = 0.0
+        self._outro_v = 0.0
 
     def hideEvent(self, event: QHideEvent) -> None:
         self._ticker.stop()

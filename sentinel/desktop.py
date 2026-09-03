@@ -1,13 +1,4 @@
-"""Desktop services that Qt already knows how to do properly.
 
-Kept apart from `system`, which is ctypes and the Win32 API. The clipboard,
-the screen layout and grabbing a screenshot are all things Qt handles across
-DPI scaling and multiple monitors better than a hand-rolled ctypes call would,
-and there is no reason to reimplement them badly.
-
-Everything here needs a running QGuiApplication, which the daemon always has by
-the time a command can be typed. Each entry point says so rather than assuming.
-"""
 
 from __future__ import annotations
 

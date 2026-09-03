@@ -1,12 +1,4 @@
-"""What the daemon is currently holding, for the strip along the top.
 
-Only things that are actually happening appear. An idle Sentinel shows nothing
-rather than a row of zeroes — a status bar that is always full stops being
-read, and the whole point is that a running timer catches your eye.
-
-Pure data: no Qt, so the popup, the overlay and any future surface can all
-render the same snapshot however suits them.
-"""
 
 from __future__ import annotations
 

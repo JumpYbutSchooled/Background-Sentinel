@@ -1,17 +1,4 @@
-"""Finding, focusing and arranging other applications' windows.
 
-The one thing a command layer sitting on top of the desktop is uniquely placed
-to do. Everything here goes through the real window manager rather than
-simulating Win+arrow keypresses, so it works with nothing focused and does not
-depend on which shortcuts the user has left enabled.
-
-Enumerating "the windows" is less obvious than it looks. `EnumWindows` returns
-thousands of handles, almost none of which are windows in the sense a person
-means. The filter in `_is_task_window` is the same one the alt-tab list uses:
-visible, titled, un-owned, not a tool window, and — the one everybody misses —
-not *cloaked*, which is how Windows hides the suspended UWP apps that would
-otherwise litter the list.
-"""
 
 from __future__ import annotations
 

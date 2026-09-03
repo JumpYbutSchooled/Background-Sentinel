@@ -107,12 +107,4 @@ The default hotkey is `ctrl+shift+space`, set in `sentinel/__init__.py`. If `Reg
 
 ## Status
 
-Version 1.0.1, im THINKING about packaging it as an `exe` seperately, but this was designed for use on a school laptop which sometimes dosent support `exe`.
-
-### Recent changes
-
-**Scroll-back card, 2026-09-02.** The popup's history is scrollable — mouse wheel over the card, or Page Up/Down at the prompt, winds back through it, with a `↓N` marker showing how far back you are. New output snaps back to the newest row. The card now holds 24 rows at once (was 14) and keeps the whole transcript behind that. The prompt row also moves: history that won't fit above it pushes it down the screen as far as 52% instead of being clipped at the top edge, and it lifts back up a little once you start typing so the line you're writing and its suggestions stay clear of the bottom edge.
-
-**Windowless launch, 2026-09-02.** `python main.py` no longer keeps you tied to a console. It hands itself over to `pythonw.exe` as a detached process and returns, so the terminal it was started from can be closed without taking the daemon with it. `--console` (or `SENTINEL_CONSOLE=1`) keeps the console for development.
-
-**Navigator opening fix, 2026-09-02.** The branches strike on one after another across the back half of the opening, but the stagger was a fixed step tuned for a handful of them. With nine root branches the last two started after the intro had already ended, so they never flickered in at all — they just appeared, fully lit, when the animation finished. The `tools` group has eleven and lost four. The step is now squeezed to fit the branch count, so the last window always closes on the intro's final frame.
+Version 1.0.3, im THINKING about packaging it as an `exe` seperately, but this was designed for use on a school laptop which sometimes dosent support `exe`.

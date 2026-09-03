@@ -1,13 +1,4 @@
-"""A calculator for the command line that cannot run arbitrary code.
 
-`eval()` would be four lines and a security hole: anything typed at a prompt
-that is one hotkey away from every keystroke has to be parsed, not executed. So
-the expression is compiled to an AST and walked, and any node that is not
-arithmetic is refused by name.
-
-Supports the operators you would expect, the constants, and a short table of
-functions. Integer results stay integers — `calc 2+2` should say 4, not 4.0.
-"""
 
 from __future__ import annotations
 

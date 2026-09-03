@@ -192,6 +192,18 @@ class ScrollbackView(QWidget):
             self._apply()
         self.update()
 
+    def settle(self) -> None:
+        """Finish both chases now, without taking new history.
+
+        For a hand-over, where what matters is that the block has *stopped* at
+        a size rather than which rows it holds. `sync(snap=True)` would do the
+        snapping, but it would also pull in the transcript and wind the view
+        back to the newest row — neither of which belongs in a freeze.
+        """
+        self._scrolled = self.offset * ROW_H
+        self._shown = self.target
+        self._apply()
+
     def advance(self, delta: float) -> bool:
         """Step the height and the scroll toward where they should be."""
         moving = False

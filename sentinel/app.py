@@ -1,9 +1,4 @@
-"""Daemon wiring.
 
-One process holds the tray icon, the hotkey registration and the popup window.
-The daemon/UI split is a logical one — the popup is hidden, not destroyed, and
-no real work happens while it is closed.
-"""
 
 from __future__ import annotations
 

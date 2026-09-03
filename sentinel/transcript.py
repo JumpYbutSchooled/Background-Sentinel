@@ -1,15 +1,4 @@
-"""The scroll-back both command lines share.
 
-A prompt that forgets everything the moment you press Enter is a prompt you
-cannot check your own work at. This holds the last handful of commands and what
-they printed, so the popup and the navigator's docked line are two views of one
-session rather than two amnesiac boxes.
-
-It lives outside the UI on purpose: the registry records into it, and both
-surfaces read from it, so neither has to know the other exists. Listeners are
-called on every change, which is what lets the popup re-measure its card as the
-history grows.
-"""
 
 from __future__ import annotations
 
