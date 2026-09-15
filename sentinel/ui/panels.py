@@ -28,7 +28,19 @@ from ..notes import CATEGORIES, NOTE, TODO, Entry, notebook, parse_due
 from ..transcript import transcript
 from ..tree import Node
 from .motion import chase
-from .paint import ACCENT, BAD, MUTED, TEXT, WARN, fade, mono
+from .paint import (
+    ACCENT,
+    BAD,
+    MUTED,
+    TEXT,
+    WARN,
+    chrome,
+    fade,
+    mono,
+    plate,
+    stroke,
+)
+from .paint import label as cased
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +68,22 @@ def _text(
     painter.drawText(QPointF(x, baseline), string)
 
 
+def _chrome_text(
+    painter: QPainter, x: float, baseline: float, string: str,
+    colour, alpha: float, size: int = 14, bold: bool = False,
+) -> None:
+    """`_text`, in the theme's own face.
+
+    Kept apart rather than switched inside `_text`, because most of what a
+    panel draws is a list with columns in it. Only the furniture — buttons,
+    tags, the title — is set in the theme's face; the rows stay monospace, or
+    a table stops being a table.
+    """
+    painter.setFont(chrome(size, bold))
+    painter.setPen(fade(colour, alpha))
+    painter.drawText(QPointF(x, baseline), string)
+
+
 def _elide(painter: QPainter, string: str, size: int, limit: float, bold: bool = False) -> str:
     painter.setFont(mono(size, bold))
     metrics = painter.fontMetrics()
@@ -76,26 +104,27 @@ def _button(
     the navigator forwards clicks here, so these can be pressed as well as
     typed.
     """
-    painter.setFont(mono(11, True))
-    key_w = painter.fontMetrics().horizontalAdvance(action.key) + 12.0
-    painter.setFont(mono(11))
-    label_w = painter.fontMetrics().horizontalAdvance(action.label) + 10.0
+    key, name = action.key, cased(action.label)
+    painter.setFont(chrome(11, True))
+    key_w = painter.fontMetrics().horizontalAdvance(key) + 12.0
+    painter.setFont(chrome(11))
+    label_w = painter.fontMetrics().horizontalAdvance(name) + 10.0
     width = key_w + label_w
     rect = QRectF(x, baseline - CHIP_H + 5.0, width, CHIP_H)
 
     tone = ACCENT if (hot or action.live) else MUTED
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(fade(tone, (0.20 if hot else 0.10) * alpha))
-    painter.drawRoundedRect(rect, 4.0, 4.0)
+    plate(painter, rect, 4.0)
     painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.setPen(QPen(fade(tone, (0.55 if hot or action.live else 0.25) * alpha), 0.8))
-    painter.drawRoundedRect(rect, 4.0, 4.0)
+    painter.setPen(QPen(fade(tone, (0.55 if hot or action.live else 0.25) * alpha), stroke(0.8)))
+    plate(painter, rect, 4.0)
 
     middle = rect.center().y() + 4.0
-    _text(painter, x + 6.0, middle, action.key, ACCENT,
-          (1.0 if hot or action.live else 0.85) * alpha, 11, True)
-    _text(painter, x + key_w, middle, action.label,
-          TEXT if hot else MUTED, (1.0 if hot else 0.9) * alpha, 11)
+    _chrome_text(painter, x + 6.0, middle, key, ACCENT,
+                 (1.0 if hot or action.live else 0.85) * alpha, 11, True)
+    _chrome_text(painter, x + key_w, middle, name,
+                 TEXT if hot else MUTED, (1.0 if hot else 0.9) * alpha, 11)
     return width
 
 
@@ -115,7 +144,7 @@ def _draft_line(
     caret = rect.x() + inset + painter.fontMetrics().horizontalAdvance(draft) + 2.0
     painter.fillRect(QRectF(caret, rect.y() + 4.0, 8.0, 17.0), fade(ACCENT, alpha))
     rule = rect.y() + 32.0
-    painter.setPen(QPen(fade(ACCENT, 0.22 * alpha), 0.7))
+    painter.setPen(QPen(fade(ACCENT, 0.22 * alpha), stroke(0.7)))
     painter.drawLine(QPointF(rect.x(), rule), QPointF(rect.right(), rule))
     return QRectF(rect.x(), rule, rect.width(), max(0.0, rect.bottom() - rule))
 
@@ -126,12 +155,13 @@ def _chip(
 ) -> float:
     """A small rounded tag. Returns its width."""
     colour = colour if colour is not None else MUTED
-    painter.setFont(mono(11))
+    label = cased(label)
+    painter.setFont(chrome(11))
     width = painter.fontMetrics().horizontalAdvance(label) + 16.0
     rect = QRectF(x, centre_y - 9.0, width, 18.0)
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(fade(colour, 0.14 * alpha))
-    painter.drawRoundedRect(rect, 4.0, 4.0)
+    plate(painter, rect, 4.0)
     painter.setPen(fade(colour, 0.95 * alpha))
     painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), label)
     painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -272,11 +302,13 @@ class Panel:
 
     def paint(self, painter: QPainter, rect: QRectF, alpha: float) -> None:
         inner = rect.adjusted(PAD_X, PAD_Y, -PAD_X, -PAD_Y)
-        _text(painter, inner.x(), inner.y() + 26.0, f"/{self.title}", ACCENT, alpha, 26, True)
-        _text(painter, inner.x(), inner.y() + 46.0, self.subtitle, MUTED, alpha, 12)
+        _chrome_text(painter, inner.x(), inner.y() + 26.0, cased(f"/{self.title}"),
+                     ACCENT, alpha, 26, True)
+        _chrome_text(painter, inner.x(), inner.y() + 46.0, self.subtitle,
+                     MUTED, alpha, 12)
 
         rule_y = inner.y() + HEADER_H - 16.0
-        painter.setPen(QPen(fade(ACCENT, 0.22 * alpha), 0.7))
+        painter.setPen(QPen(fade(ACCENT, 0.22 * alpha), stroke(0.7)))
         painter.drawLine(QPointF(inner.x(), rule_y), QPointF(inner.right(), rule_y))
 
         body = QRectF(
@@ -738,7 +770,7 @@ class CommandPanel(Panel):
             _chip(painter, rect.right() - 130.0, y - 6.0, "backend missing", alpha, WARN)
 
         y += 14.0
-        painter.setPen(QPen(fade(ACCENT, 0.22 * alpha), 0.7))
+        painter.setPen(QPen(fade(ACCENT, 0.22 * alpha), stroke(0.7)))
         painter.drawLine(QPointF(x, y), QPointF(rect.right(), y))
         y += 24.0
 
@@ -779,7 +811,7 @@ class CommandPanel(Panel):
 
         if self.output:
             y += 8.0
-            painter.setPen(QPen(fade(ACCENT, 0.16 * alpha), 0.7))
+            painter.setPen(QPen(fade(ACCENT, 0.16 * alpha), stroke(0.7)))
             painter.drawLine(QPointF(x, y), QPointF(rect.right(), y))
             y += 18.0
             for line in self.output:
@@ -1195,9 +1227,9 @@ class NewEntryPanel(Panel):
             focused = i == self.focus
             _text(painter, rect.x(), y, field.label, MUTED, alpha, 11)
             box = QRectF(rect.x(), y + 6.0, rect.width(), 28.0)
-            painter.setPen(QPen(fade(ACCENT, (0.8 if focused else 0.22) * alpha), 0.9))
+            painter.setPen(QPen(fade(ACCENT, (0.8 if focused else 0.22) * alpha), stroke(0.9)))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(box, 3.0, 3.0)
+            plate(painter, box, 3.0)
 
             shown = field.value or ("" if focused else field.hint)
             colour = TEXT if field.value else MUTED

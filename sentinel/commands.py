@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from . import APP_NAME, APP_VERSION
-from . import calc, desktop, system, web, words
+from . import calc, desktop, endpoints, system, web, words
+from . import theme as themes
 from . import windows as win
 from .apps import index as app_index
 from .apps import launch as launch_app
@@ -196,6 +197,29 @@ def _mute_values(args: list[str], position: int, prefix: str) -> list[Suggestion
     return [
         Suggestion("on", "on", "force muted", "argument"),
         Suggestion("off", "off", "force unmuted", "argument"),
+    ]
+
+
+_INPUT_WORDS = ("in", "inputs", "mic", "recording")
+
+
+def _audio_values(args: list[str], position: int, prefix: str) -> list[Suggestion]:
+    heading = args[0].lower() if args else ""
+    if position == 1 and heading in _INPUT_WORDS:
+        flow, offered = endpoints.CAPTURE, []
+    elif position == 0:
+        flow = endpoints.RENDER
+        offered = [Suggestion("inputs", "inputs", "the recording side", "argument")]
+    else:
+        return []
+    return offered + [
+        Suggestion(
+            quote(device.name), device.name,
+            "default" if device.default else f"{device.level}%"
+            if device.level is not None else "",
+            "value",
+        )
+        for device in endpoints.devices(flow)
     ]
 
 
@@ -481,6 +505,94 @@ def _mute(args: list[str]) -> Result:
         open_apps = ", ".join(system.sessions()) or "none"
         return Result(False, f"no audio session for {target!r}. playing: {open_apps}")
     return Result(True, f"{'muted' if result else 'unmuted'} {target}")
+
+
+def _endpoint_rows(found: list[endpoints.Device]) -> tuple[str, ...]:
+    """Devices as display rows, the default one bulleted."""
+    rows = []
+    for device in found:
+        name = device.name if len(device.name) <= 46 else device.name[:45] + "…"
+        level = "  — " if device.level is None else f"{device.level:>3}%"
+        rows.append((
+            ("• " if device.default else "  ") + name,
+            f"{level}{'   muted' if device.muted else ''}",
+        ))
+    return _table(rows)
+
+
+def _audio(args: list[str]) -> Result:
+    """The endpoints themselves, rather than one application's session.
+
+    `volume` and `mute` both act on whatever device Windows is currently
+    sending sound to; this is the command that decides which device that is.
+    """
+    flow = endpoints.RENDER
+    if args and args[0].lower() in _INPUT_WORDS:
+        flow, args = endpoints.CAPTURE, args[1:]
+        if not args:
+            found = endpoints.devices(flow)
+            if not found:
+                return Result(False, "no recording devices")
+            return Result(True, f"{len(found)} input(s)", _endpoint_rows(found))
+
+    if not args:
+        found = endpoints.devices(flow)
+        if not found:
+            return Result(False, "no output devices — the audio service may be down")
+        default = next((d for d in found if d.default), None)
+        summary = f"{len(found)} output(s)"
+        if default is not None:
+            summary += f" · playing through {default.name}"
+        return Result(True, summary, _endpoint_rows(found))
+
+    # A trailing number is a level for the named device; anything else is the
+    # whole name, so a device with a digit in it still resolves.
+    level: int | None = None
+    if len(args) > 1 and args[-1].rstrip("%").isdigit():
+        level = int(args[-1].rstrip("%"))
+        args = args[:-1]
+
+    name = " ".join(args)
+    matches = endpoints.find(name, flow)
+    if not matches:
+        known = tuple(d.name for d in endpoints.devices(flow))
+        return Result(False, f"no device matching {name!r}", _listing(known, "  "))
+    if len(matches) > 1:
+        return Result(
+            False, f"{name!r} matches {len(matches)} devices — be more specific",
+            _listing(tuple(d.name for d in matches), "  "),
+        )
+
+    device = matches[0]
+    if level is not None:
+        if not endpoints.set_level(device.id, level):
+            return Result(False, f"{device.name} would not take a level")
+        return Result(True, f"{device.name} set to {max(0, min(100, level))}%")
+    if not endpoints.set_default(device.id):
+        return Result(False, f"Windows would not switch to {device.name}")
+    side = "input" if flow == endpoints.CAPTURE else "output"
+    return Result(True, f"default {side} is now {device.name}")
+
+
+def _theme(args: list[str]) -> Result:
+    """Switch the whole look, or say what the choices are.
+
+    A front-end for one setting, like `accent` and `motion` — but it lists what
+    each theme is when asked with no argument, because unlike a colour you
+    cannot tell what one is from its name.
+    """
+    word = " ".join(args).lower().strip()
+    if not word:
+        running = themes.active().key
+        return Result(
+            True,
+            f"theme is {running}",
+            _table([
+                (("• " if key == running else "  ") + key, theme.blurb)
+                for key, theme in themes.THEMES.items()
+            ]),
+        )
+    return _apply_setting("theme", word)
 
 
 def _launch(args: list[str]) -> Result:
@@ -1547,6 +1659,15 @@ register(Command(
     aliases=("speed",),
 ))
 register(Command(
+    "theme", "theme [name]", "the whole look, shapes and motion with it", _theme,
+    forms=(
+        ("theme", "which one is running, and what the others are"),
+        ("theme <name>", "switch to it — or next/prev to step through"),
+    ),
+    examples=("theme", "theme mechanical", "theme next"),
+    aliases=("look", "skin"),
+))
+register(Command(
     "reload", "reload", "re-index the Start Menu", _reload,
     forms=(
         ("reload", "rescan for applications, in the background"),
@@ -1823,6 +1944,19 @@ register(Command(
     ),
     examples=("mute", "mute discord", "mute spotify off"),
     requires="mixer",
+    group="system",
+))
+register(Command(
+    "audio", "audio [inputs|<device>] [0-100]", "which device the sound comes out of",
+    _audio,
+    forms=(
+        ("audio", "every output device, with its level"),
+        ("audio inputs", "the recording side instead"),
+        ("audio <device>", "make that one the default"),
+        ("audio <device> <0-100>", "set that device's own level"),
+    ),
+    examples=("audio", "audio headphones", "audio speakers 40", "audio inputs"),
+    aliases=("device", "devices", "output"),
     group="system",
 ))
 register(Command(
@@ -2138,6 +2272,7 @@ def _category_values(args: list[str], position: int, prefix: str) -> list[Sugges
 _PROVIDERS.update({
     "launch": _launch_values,
     "mute": _mute_values,
+    "audio": _audio_values,
     "help": _help_values,
     "open": _open_values,
     "focus": _window_values,
@@ -2149,6 +2284,7 @@ _PROVIDERS.update({
     "folder": _folder_values,
     "config": _config_values,
     "accent": _choice_values("accent"),
+    "theme": _choice_values("theme"),
     "motion": _choice_values("motion"),
     "done": _entry_values(TODO),
     "due": _entry_values(TODO),

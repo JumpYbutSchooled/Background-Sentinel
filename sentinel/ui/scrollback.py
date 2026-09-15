@@ -25,7 +25,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..transcript import COMMAND, ERROR, VIEW_ROWS, transcript
 from .motion import chase, settled
-from .paint import ACCENT, BAD, CELL_FILL, MUTED, TEXT, fade, mono
+from .paint import ACCENT, BAD, CELL_FILL, MUTED, TEXT, fade, mono, plate
 
 #: Row height and text size. Small enough that ten commands do not dominate the
 #: screen, big enough to read a listing's columns.
@@ -283,7 +283,7 @@ class ScrollbackView(QWidget):
         # Filled, because it sits over the newest visible row's text.
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fade(CELL_FILL, alpha))
-        painter.drawRoundedRect(pill, 3.0, 3.0)
+        plate(painter, pill, 3.0)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(fade(ACCENT, 0.8 * alpha))
         painter.drawText(

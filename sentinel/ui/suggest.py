@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..commands import Suggestion, apply_completion, complete
 from .motion import chase, settled
-from .paint import ACCENT, CELL_FILL, MUTED, TEXT, fade, mono
+from .paint import ACCENT, CELL_FILL, MUTED, TEXT, fade, mono, plate, stroke
 
 ROW_H = 24.0
 PAD = 10.0
@@ -151,10 +151,10 @@ def paint(
     if framed:
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fade(CELL_FILL, 0.98 * alpha))
-        painter.drawRoundedRect(rect, 6.0, 6.0)
+        plate(painter, rect, 6.0)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(fade(ACCENT, 0.28 * alpha), 0.9))
-        painter.drawRoundedRect(rect, 6.0, 6.0)
+        painter.setPen(QPen(fade(ACCENT, 0.28 * alpha), stroke(0.9)))
+        plate(painter, rect, 6.0)
 
     # One band at a fractional row, drawn before the rows and slid into place,
     # rather than a hard rectangle switched on under whichever row happens to

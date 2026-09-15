@@ -11,6 +11,7 @@ easing in; an erratic stutter reads as a tube striking, which is the point.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from PySide6.QtCore import (
@@ -25,7 +26,10 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QGuiApplication
 
+from .. import theme as theming
 from ..config import settings
+
+log = logging.getLogger(__name__)
 
 #: One dial for every animation in the app. Lower is faster. The baselines it
 #: multiplies are the durations that felt right unscaled. Settings can change
@@ -161,18 +165,58 @@ class Ticker(QObject):
             self._timer.setInterval(frame_interval())
 
 
-#: Striking on: dark, a couple of false starts, then lit. False starts belong
-#: here — a tube that catches, drops and catches again is what striking on
-#: looks like, and it is read as the thing arriving.
+# Striking on and dying out. Both waveforms belong to the theme now — a tube
+# that catches, drops and catches again is what a CRT arriving looks like, and
+# a shutter that slammed twice would read as broken rather than as heavy — but
+# two rules hold whichever theme is running, and both were learned the hard
+# way. The pattern is *stepped*, never smoothed, or the character goes out of
+# it; and the off pattern never brightens partway, because on the way out that
+# reads as a window failing to repaint rather than as a thing leaving.
+#
+# `theme.PHOSPHOR` carries the originals; these names remain as the fallback
+# for a theme that declines to say.
 ON_PATTERN = (0.0, 0.9, 0.1, 1.0, 0.25, 0.85, 0.55, 1.0)
-#: Dying out: lit, stuttering, then dark — but never *brighter* than the step
-#: before. Going out and coming back is not read as a tube dying; on the way
-#: out it is read as the window having failed to repaint, which is precisely
-#: what it looked like. The steps stay uneven, so the stutter survives.
 OFF_PATTERN = (1.0, 0.92, 0.34, 0.30, 0.11, 0.09, 0.02, 0.0)
 
-#: Baseline for a flicker; scaled through `ms()` each time one runs.
+#: Baseline for a flicker; scaled through `ms()` each time one runs. Overridden
+#: per theme, so a mechanism can arrive faster than a tube warms up.
 FLICKER_BASE = 380
+
+
+def flicker_base() -> int:
+    return int(theming.active().flicker_base or FLICKER_BASE)
+
+
+def easing(name: str) -> QEasingCurve.Type:
+    """A QEasingCurve.Type by name, as themes spell it.
+
+    Themes are held as plain data and must not import Qt, so the curve arrives
+    here as a string. An unknown name is linear and a warning — a theme with a
+    typo in it should animate plainly, not fail to open.
+    """
+    curve = getattr(QEasingCurve.Type, name, None)
+    if curve is None:
+        log.warning("No easing curve called %r; using Linear", name)
+        return QEasingCurve.Type.Linear
+    return curve
+
+
+def open_easing() -> QEasingCurve.Type:
+    return easing(theming.active().open_easing)
+
+
+def close_easing() -> QEasingCurve.Type:
+    return easing(theming.active().close_easing)
+
+
+def step_easing() -> QEasingCurve.Type:
+    """For a move that starts from rest and comes to rest."""
+    return easing(theming.active().step_easing)
+
+
+def settle_easing() -> QEasingCurve.Type:
+    """For a move that is already travelling when it starts."""
+    return easing(theming.active().settle_easing)
 
 
 def _sample(pattern: tuple[float, ...], progress: float) -> float:
@@ -185,17 +229,21 @@ def _sample(pattern: tuple[float, ...], progress: float) -> float:
 
 def flicker_on(progress: float) -> float:
     """0 -> 1, stuttering. Ends fully lit."""
-    return _sample(ON_PATTERN, progress)
+    return _sample(theming.active().on_pattern or ON_PATTERN, progress)
 
 
 def flicker_off(progress: float) -> float:
     """1 -> 0, stuttering. Ends fully dark.
 
-    The decay term guarantees it reaches zero however the pattern is edited.
+    The decay term guarantees it reaches zero however the pattern is edited —
+    including by a theme, which is exactly why it is a multiplier here rather
+    than a trailing zero somebody has to remember to put in the tuple.
     """
     if progress >= 1.0:
         return 0.0
-    return _sample(OFF_PATTERN, progress) * (1.0 - progress)
+    return _sample(theming.active().off_pattern or OFF_PATTERN, progress) * (
+        1.0 - progress
+    )
 
 
 class Flicker(QObject):
@@ -211,12 +259,15 @@ class Flicker(QObject):
         self,
         apply_alpha: Callable[[float], None],
         parent: QObject | None = None,
-        baseline: int = FLICKER_BASE,
+        baseline: int | None = None,
     ) -> None:
         super().__init__(parent)
         self._apply = apply_alpha
         self._progress = 0.0
         self._lighting = True
+        #: None means "whatever the theme says", read at the moment a flicker
+        #: starts. A number is a caller who has tuned this particular fade
+        #: against something else and must not be re-timed underneath them.
         self._baseline = baseline
 
         self._anim = QPropertyAnimation(self, b"progress", self)
@@ -261,9 +312,12 @@ class Flicker(QObject):
         self._anim.stop()
 
     def _start(self) -> None:
-        # Read the duration now, so a change to the speed setting takes effect
-        # on the very next flicker rather than after a restart.
-        self._anim.setDuration(ms(self._baseline))
+        # Read the duration now, so a change to the speed setting — or to the
+        # theme — takes effect on the very next flicker rather than after a
+        # restart.
+        self._anim.setDuration(ms(
+            flicker_base() if self._baseline is None else self._baseline
+        ))
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
         self._anim.start()

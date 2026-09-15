@@ -50,13 +50,16 @@ from PySide6.QtGui import (
     QLinearGradient,
     QMouseEvent,
     QPainter,
+    QPainterPath,
     QPaintEvent,
     QPen,
     QPixmap,
+    QPolygonF,
     QRadialGradient,
 )
 from PySide6.QtWidgets import QWidget
 
+from .. import theme as theming
 from ..commands import lookup
 from ..config import settings
 from ..status import LIVE, WARN, Badge, snapshot
@@ -65,7 +68,18 @@ from ..tree import Node, build_tree
 from .foreground import force_foreground
 from .highlight import OK as HL_OK
 from .highlight import colour_for, spans
-from .motion import chase, flicker_off, flicker_on, frame_interval, ms, step_seconds
+from .motion import (
+    chase,
+    close_easing,
+    flicker_off,
+    flicker_on,
+    frame_interval,
+    ms,
+    open_easing,
+    settle_easing,
+    step_easing,
+    step_seconds,
+)
 from .panels import Panel, make_panel
 from . import scrollback, suggest
 from .suggest import Completer
@@ -73,23 +87,32 @@ from .paint import (
     ACCENT,
     BACKDROP,
     BAD,
+    BALLAST,
     BAND_FILL,
+    CARD_EDGE,
+    CARD_FILL,
     CELL_FILL,
     MUTED,
     PANEL_FILL,
     TEXT,
     advance_accent,
     blend,
+    chrome,
     clamp01,
     fade,
+    hatch,
     lerp,
     mono,
+    plate,
+    plate_path,
     smoothstep,
+    # `label` is a parameter name three times over in this file — the thing
+    # written on a button. Imported under the name of what it does instead.
+    label as cased,
     smootherstep,
+    stroke,
 )
 from .popup import (
-    CARD_BG,
-    CARD_BORDER,
     CARD_BORDER_W,
     CARD_CORNER,
     CARD_CONTENT_TOP,
@@ -104,10 +127,9 @@ from .popup import (
 log = logging.getLogger(__name__)
 
 
-# The prompt capsule's own look, taken from the popup's stylesheet so the two
-# windows hand over to each other without a visible jump.
-CARD_FILL = QColor(CARD_BG)
-CARD_EDGE = QColor(CARD_BORDER)
+# The prompt capsule's own look comes from the palette, which is where the
+# popup reads it too — the two windows hand over to each other and must not
+# hold separate copies of a colour a theme can change underneath them.
 
 # ----------------------------------------------------------------- geometry
 
@@ -171,6 +193,10 @@ CLOSE_BASE = 1080
 #: read as the card having hung. Driven linearly the same leg is a tenth of the
 #: way in by 270ms, and smootherstep still takes its first and second
 #: derivatives to zero at both ends, so nothing jerks at a handover.
+#: Both come from the theme now, read at the moment an animation starts —
+#: `motion.open_easing()` and `close_easing()`. The phosphor theme names Linear
+#: for both, which is what these constants said and why they are kept: they
+#: document the default, and a theme that says nothing gets exactly this.
 OPEN_EASING = QEasingCurve.Type.Linear
 CLOSE_EASING = QEasingCurve.Type.Linear
 
@@ -270,6 +296,16 @@ class Phase(enum.Enum):
 
 
 # ------------------------------------------------------------------- easing
+
+
+def _diamond(centre: QPointF, radius: float) -> QPolygonF:
+    """A square stood on its corner — the diagonal theme's ring."""
+    return QPolygonF([
+        QPointF(centre.x(), centre.y() - radius),
+        QPointF(centre.x() + radius, centre.y()),
+        QPointF(centre.x(), centre.y() + radius),
+        QPointF(centre.x() - radius, centre.y()),
+    ])
 
 
 def _centred(centre: QPointF, width: float, height: float) -> QRectF:
@@ -386,6 +422,11 @@ class NavigatorWindow(QWidget):
         # Caches. The grid was ~90 drawLine calls per frame; it is now one
         # tiled blit. Shapes were recomputed several times per paint.
         self._grid_tile: QPixmap | None = None
+        #: What the cached tile was drawn for: its size, the pattern the theme
+        #: asked for, and the accent it baked in. Any of the three changing is
+        #: a new tile — the accent one matters most, because it changes on
+        #: every frame of a colour sweep.
+        self._grid_key: tuple | None = None
         self._shape_cache: dict[tuple[int, int], list[tuple[QRectF, float]]] = {}
         self._cache_size = (0, 0)
 
@@ -425,8 +466,10 @@ class NavigatorWindow(QWidget):
     def _on_setting_changed(self, key: str, value: object) -> None:
         if key == "frame_cap":
             self._ticker.setInterval(self._frame_interval())
-        elif key == "accent":
-            self.invalidate_caches()  # the grid tile bakes in the accent
+        elif key in ("accent", "theme"):
+            # The grid tile bakes in the accent, and a theme changes the
+            # pattern drawn into it as well as the colour.
+            self.invalidate_caches()
         self.update()
 
     # --------------------------------------------------------- animated props
@@ -552,7 +595,7 @@ class NavigatorWindow(QWidget):
         self._ticker.setInterval(self._frame_interval())
         self._ticker.start()
         self._run_chain(
-            [_Step(Phase.INTRO, "intro", 0.0, 1.0, ms(OPEN_BASE), OPEN_EASING)],
+            [_Step(Phase.INTRO, "intro", 0.0, 1.0, ms(OPEN_BASE), open_easing())],
             lambda: self._on_opened(then),
         )
 
@@ -620,7 +663,7 @@ class NavigatorWindow(QWidget):
         # placeholder rather than a stale command.
         self._buffer = ""
         self._run_chain(
-            [_Step(Phase.OUTRO, "outro", 0.0, 1.0, ms(CLOSE_BASE), CLOSE_EASING)],
+            [_Step(Phase.OUTRO, "outro", 0.0, 1.0, ms(CLOSE_BASE), close_easing())],
             self._finish_dismiss,
         )
 
@@ -698,7 +741,7 @@ class NavigatorWindow(QWidget):
 
         common = [
             _Step(Phase.FLICKER, "flicker", 0.0, 1.0, ms(440), QEasingCurve.Type.Linear),
-            _Step(Phase.TRAVEL, "travel", 0.0, 1.0, ms(380), QEasingCurve.Type.InOutCubic),
+            _Step(Phase.TRAVEL, "travel", 0.0, 1.0, ms(380), step_easing()),
         ]
 
         if child.is_leaf:
@@ -707,7 +750,7 @@ class NavigatorWindow(QWidget):
                 + [
                     _Step(
                         Phase.EXPAND, "expand", 0.0, 1.0, ms(640),
-                        QEasingCurve.Type.InOutCubic, before=enter,
+                        step_easing(), before=enter,
                     )
                 ],
                 self._on_leaf_open,
@@ -718,7 +761,7 @@ class NavigatorWindow(QWidget):
                 + [
                     _Step(
                         Phase.BLOOM, "bloom", 0.0, 1.0, ms(560),
-                        QEasingCurve.Type.OutCubic, before=enter,
+                        settle_easing(), before=enter,
                     )
                 ],
                 self._on_branch_open,
@@ -754,8 +797,10 @@ class NavigatorWindow(QWidget):
                 self._panel = None
 
         opening = (
-            _Step(Phase.EXPAND, "expand", 1.0, 0.0, ms(460), QEasingCurve.Type.InOutCubic)
+            _Step(Phase.EXPAND, "expand", 1.0, 0.0, ms(460), step_easing())
             if self._phase == Phase.PANEL
+            # InCubic, not the theme's step curve: this one only accelerates
+            # away, and both themes want it to leave rather than to arrive.
             else _Step(Phase.BLOOM, "bloom", 1.0, 0.0, ms(420), QEasingCurve.Type.InCubic)
         )
         self._run_chain(
@@ -763,7 +808,7 @@ class NavigatorWindow(QWidget):
                 opening,
                 _Step(
                     Phase.TRAVEL, "travel", 1.0, 0.0, ms(380),
-                    QEasingCurve.Type.InOutCubic, before=leave,
+                    step_easing(), before=leave,
                 ),
                 _Step(Phase.FLICKER, "flicker", 1.0, 0.0, ms(340), QEasingCurve.Type.Linear),
             ],
@@ -1239,15 +1284,15 @@ class NavigatorWindow(QWidget):
         settle = smootherstep(0.45, 1.0, u)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(blend(BAND_FILL, CARD_FILL, settle))
-        painter.drawRoundedRect(rect, corner, corner)
+        plate(painter, rect, corner)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(
             QPen(
                 blend(ACCENT, CARD_EDGE, settle),
-                lerp(STROKE_BAR, float(CARD_BORDER_W), settle),
+                lerp(stroke(STROKE_BAR), float(CARD_BORDER_W), settle),
             )
         )
-        painter.drawRoundedRect(rect, corner, corner)
+        plate(painter, rect, corner)
 
         # The scroll-back rides along, sliding and narrowing from the band's
         # full width onto the card's. It is drawn at full strength throughout:
@@ -1309,23 +1354,44 @@ class NavigatorWindow(QWidget):
         Drawing the grid line by line cost ~90 drawLine calls every frame. At
         120fps that is 11k calls a second for something that never changes
         shape — only its offset does.
+
+        Both patterns tile seamlessly on a square cell, which is the whole
+        reason the diagonal one runs at exactly 45°: a corner-to-corner line
+        meets its neighbour's line across every edge, so the lattice is
+        continuous and nothing has to be drawn twice at the seam.
         """
         ratio = self.devicePixelRatioF()
         step = int(round(GRID_STEP * ratio))
-        if self._grid_tile is None or self._grid_tile.width() != step:
+        diagonal = theming.active().grid == "diagonal"
+        key = (step, diagonal, ACCENT.rgb())
+        if self._grid_tile is None or self._grid_key != key:
             tile = QPixmap(step, step)
             tile.setDevicePixelRatio(ratio)
             tile.fill(Qt.GlobalColor.transparent)
             scratch = QPainter(tile)
-            scratch.setPen(QPen(fade(ACCENT, 0.07), 1.0))
-            scratch.drawLine(0, 0, step, 0)
-            scratch.drawLine(0, 0, 0, step)
+            if diagonal:
+                # Heavier and one-directional: a hatched plate stretched over
+                # the whole screen, with the second colour tucked between the
+                # runs so the pattern has a grain to it.
+                scratch.setRenderHint(QPainter.RenderHint.Antialiasing)
+                if BALLAST.alpha():
+                    scratch.setPen(QPen(fade(BALLAST, 0.5), 3.0 * ratio))
+                    scratch.drawLine(0, step, step, 0)
+                scratch.setPen(QPen(fade(ACCENT, 0.10), 1.4 * ratio))
+                scratch.drawLine(0, step // 2, step // 2, 0)
+                scratch.drawLine(step // 2, step, step, step // 2)
+            else:
+                scratch.setPen(QPen(fade(ACCENT, 0.07), 1.0))
+                scratch.drawLine(0, 0, step, 0)
+                scratch.drawLine(0, 0, 0, step)
             scratch.end()
             self._grid_tile = tile
+            self._grid_key = key
         return self._grid_tile
 
     def invalidate_caches(self) -> None:
         self._grid_tile = None
+        self._grid_key = None
         self._shape_cache.clear()
 
     def _paint_background(self, painter: QPainter, alpha: float) -> None:
@@ -1354,38 +1420,102 @@ class NavigatorWindow(QWidget):
             painter.restore()
 
         if settings.get("rings"):
-            # Radar rings breathing outward — the Sentinel is looking.
+            # Breathing outward from the dial: the Sentinel is looking. Round
+            # under phosphor, and squared onto its diagonal under a theme that
+            # has no curves in it — same pulse, same timing, different geometry.
+            diamond = theming.active().rings == "diamond"
             reach = math.hypot(width, height) * 0.55
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             for i in range(RING_COUNT):
                 phase = ((self._clock / RING_PERIOD) + i / RING_COUNT) % 1.0
                 radius = phase * reach
                 if radius < 1.0:
                     continue
                 strength = (1.0 - phase) ** 2 * 0.22 * alpha
-                painter.setPen(QPen(fade(ACCENT, strength), 1.0))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawEllipse(_centred(centre, radius * 2.0, radius * 2.0))
+                painter.setPen(QPen(fade(ACCENT, strength), stroke(1.0)))
+                if diamond:
+                    painter.drawPolygon(_diamond(centre, radius))
+                else:
+                    painter.drawEllipse(_centred(centre, radius * 2.0, radius * 2.0))
 
         if settings.get("scanline"):
-            scan_y = ((self._clock / SCAN_PERIOD) % 1.0) * (height + SCAN_BAND) - SCAN_BAND
+            self._paint_scan(painter, alpha, width, height)
+
+    def _paint_scan(
+        self, painter: QPainter, alpha: float, width: float, height: float
+    ) -> None:
+        """The band travelling down the screen.
+
+        Soft under phosphor: a gradient with no edge to it, the way a tube
+        refreshes. Hard under a mechanical theme: a leaning shutter with a lit
+        leading edge, which is a thing with a position rather than a glow.
+        """
+        travel = (self._clock / SCAN_PERIOD) % 1.0
+        if theming.active().scan != "shutter":
+            scan_y = travel * (height + SCAN_BAND) - SCAN_BAND
             gradient = QLinearGradient(0.0, scan_y, 0.0, scan_y + SCAN_BAND)
             gradient.setColorAt(0.0, fade(ACCENT, 0.0))
             gradient.setColorAt(0.5, fade(ACCENT, 0.05 * alpha))
             gradient.setColorAt(1.0, fade(ACCENT, 0.0))
             painter.fillRect(QRectF(0.0, scan_y, width, SCAN_BAND), gradient)
+            return
+
+        # Drawn in a rotated frame rather than by shearing a rectangle: a
+        # parallelogram whose lean is guessed at is not 45° — it is whatever
+        # the screen's aspect ratio makes it — and the band has to run parallel
+        # to the hatch and the grid, which are not negotiable about the angle.
+        band = SCAN_BAND * 0.5
+        # How far the screen reaches along the rotated axis: rotating by 45°
+        # puts the far corner at (w + h) / root two, and the band has to cross
+        # all of that to leave at the same rate it arrived.
+        span = (width + height) / math.sqrt(2.0)
+        painter.save()
+        painter.rotate(-45.0)
+        y = travel * (span + band) - band
+        painter.fillRect(
+            QRectF(-span, y, span * 2.0, band), fade(ACCENT, 0.05 * alpha)
+        )
+        painter.setPen(QPen(fade(ACCENT, 0.16 * alpha), stroke(1.0)))
+        painter.drawLine(QPointF(-span, y), QPointF(span, y))
+        painter.restore()
 
     def _paint_sweep(self, painter: QPainter, alpha: float) -> None:
-        """A bright arc creeping round the dial, like a radar head."""
+        """The dial's head, creeping round it.
+
+        An arc under phosphor — a radar sweep. A run of ticks under mechanical:
+        the same rotation, read off a machined collar instead of a screen.
+        """
         if not (settings.get("effects") and settings.get("rings")):
             return
-        rect = _centred(self._centre(), CENTRE_R * 2.0 + 16.0, CENTRE_R * 2.0 + 16.0)
-        start = int((-self._clock / SWEEP_PERIOD % 1.0) * 360.0)
+        centre = self._centre()
+        reach = CENTRE_R + 8.0
+        turn = -self._clock / SWEEP_PERIOD % 1.0
         painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        if theming.active().sweep == "ticks":
+            steps = 7
+            for i in range(steps):
+                degrees = turn * 360.0 - i * (SWEEP_ARC / steps)
+                radians = math.radians(degrees)
+                cos, sin = math.cos(radians), -math.sin(radians)
+                strength = (1.0 - i / steps) * 0.65 * alpha
+                painter.setPen(QPen(fade(ACCENT, strength), stroke(STROKE_DIAL)))
+                painter.drawLine(
+                    QPointF(centre.x() + cos * reach, centre.y() + sin * reach),
+                    QPointF(
+                        centre.x() + cos * (reach + 11.0),
+                        centre.y() + sin * (reach + 11.0),
+                    ),
+                )
+            return
+
+        rect = _centred(centre, reach * 2.0, reach * 2.0)
+        start = int(turn * 360.0)
         # Drawn in a few steps so it fades along its own length.
         steps = 5
         for i in range(steps):
             strength = (1.0 - i / steps) * 0.5 * alpha
-            painter.setPen(QPen(fade(ACCENT, strength), STROKE_DIAL))
+            painter.setPen(QPen(fade(ACCENT, strength), stroke(STROKE_DIAL)))
             painter.drawArc(
                 rect,
                 (start - i * SWEEP_ARC // steps) * 16,
@@ -1535,12 +1665,14 @@ class NavigatorWindow(QWidget):
         return flicker_on((self._intro_v - low) / (high - low))
 
     def _route(self, index: int, point: QPointF, grow: float) -> list[QPointF]:
-        """An orthogonal staircase from the dial's edge to a branch button.
+        """The run from the dial's edge out to a branch button.
 
-        Never diagonal: every leg runs along one axis, and 2-4 of them stepping
-        alternately is what makes the pattern. The leg count comes from the
-        index rather than a random draw, so a branch keeps its shape frame to
-        frame instead of shimmering.
+        Two shapes, chosen by the theme. The staircase below is the original:
+        every leg runs along one axis, and 2-4 of them stepping alternately is
+        what makes the pattern — it reads as a trace on a board. The diagonal
+        route earlier in this method is the other, for a theme built on 45°.
+        Either way the leg count comes from the index rather than a random
+        draw, so a branch keeps its shape frame to frame instead of shimmering.
 
         Worked in *major/minor* terms rather than x/y. The major axis is the
         one the button mostly lies along; the run leaves the dial's pole on
@@ -1575,6 +1707,46 @@ class NavigatorWindow(QWidget):
         # whether the button is far enough off-axis to be approached from
         # beside it. Geometry overrules the requested count: a run that would
         # cross the dial or the very button it points at is not a style choice.
+        if theming.active().routing == "diagonal":
+            # The other way to get there: out along the major axis, then one
+            # run at exactly 45°. It keeps the three things the staircase
+            # guarantees — it leaves the dial square, it never crosses it, and
+            # it arrives at a *face* rather than at a corner — and it puts the
+            # diagonal the theme is built on into the one part of the interface
+            # that is nothing but lines.
+            #
+            # No index variation here, deliberately. The staircase varies its
+            # leg count so a ring of them does not read as a printed fan; a
+            # mechanism is supposed to look like every arm was cut on the same
+            # jig, and the geometry below is fully determined by the button.
+            room = abs(face) - radius     # dial edge to the near face
+            side = abs(minor)             # how far off-axis the button sits
+            if side < reach_minor * 1.05:
+                # Square on the dial's own axis: there is nothing to come in
+                # from, and a diagonal would arrive inside the button.
+                path = [(start, 0.0), (face, 0.0)]
+            elif room >= side + BRANCH_CLEAR:
+                # Room for the whole diagonal: hold the axis until the run
+                # ahead is exactly as long as the run sideways, then take it.
+                # Landing on the near face is what that arithmetic buys.
+                knee = ahead * (abs(face) - side)
+                path = [(start, 0.0), (knee, 0.0), (face, minor)]
+            else:
+                # Too close for that: come in from beside instead, diagonally
+                # onto the button's own centre line and then straight to its
+                # side face. The last leg is nothing when the diagonal has
+                # already covered the sideways travel, and drops out.
+                run = max(0.0, min(side, abs(major) - radius))
+                path = [
+                    (start, 0.0),
+                    (major - ahead * run, 0.0),
+                    (major, aside * run),
+                    (major, flank),
+                ]
+            if upright:
+                return [QPointF(centre.x() + n, centre.y() + m) for m, n in path]
+            return [QPointF(centre.x() + m, centre.y() + n) for m, n in path]
+
         pivot = radius + BRANCH_CLEAR
         roomy = abs(face) > pivot + 1.0
         sideways = abs(minor)
@@ -1629,7 +1801,7 @@ class NavigatorWindow(QWidget):
             painter.setPen(
                 QPen(
                     fade(ACCENT, (0.55 if live else 0.28) * alpha),
-                    STROKE_BRANCH,
+                    stroke(STROKE_BRANCH),
                 )
             )
             for start, end in zip(route, route[1:]):
@@ -1670,34 +1842,43 @@ class NavigatorWindow(QWidget):
 
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fade(CELL_FILL, alpha))
-        painter.drawRoundedRect(rect, corner, corner)
+        plate(painter, rect, corner)
+
+        # The theme's second colour, laid under the accent on the dial and on
+        # whatever the pointer is over. It is what puts the navy into a
+        # crimson interface without asking anyone to read text in it.
+        if (primary or hot) and BALLAST.alpha():
+            painter.setBrush(fade(BALLAST, (0.5 if primary else 0.32) * alpha))
+            plate(painter, rect, corner)
+        if primary:
+            hatch(painter, rect, corner, ACCENT, alpha)
 
         if hot:
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(fade(ACCENT, 0.25 * alpha), STROKE_HALO))
+            painter.setPen(QPen(fade(ACCENT, 0.25 * alpha), stroke(STROKE_HALO)))
             halo = rect.adjusted(-6.0, -6.0, 6.0, 6.0)
-            painter.drawRoundedRect(halo, corner + 6.0, corner + 6.0)
+            plate(painter, halo, corner + 6.0)
 
         painter.setBrush(Qt.BrushStyle.NoBrush)
         ring = 0.95 if (primary or hot) else 0.5
-        painter.setPen(
-            QPen(fade(ACCENT, ring * alpha), STROKE_DIAL if primary else STROKE_NODE)
-        )
-        painter.drawRoundedRect(rect, corner, corner)
+        painter.setPen(QPen(
+            fade(ACCENT, ring * alpha),
+            stroke(STROKE_DIAL if primary else STROKE_NODE),
+        ))
+        plate(painter, rect, corner)
 
         if primary:
             inset = min(9.0, rect.width() / 6.0)
-            painter.setPen(QPen(fade(ACCENT, 0.18 * alpha), STROKE_DIAL_INNER))
-            painter.drawRoundedRect(
-                rect.adjusted(inset, inset, -inset, -inset),
-                max(0.0, corner - inset),
+            painter.setPen(QPen(fade(ACCENT, 0.18 * alpha), stroke(STROKE_DIAL_INNER)))
+            plate(
+                painter, rect.adjusted(inset, inset, -inset, -inset),
                 max(0.0, corner - inset),
             )
 
         size = font_size if font_size is not None else (34 if primary else 15)
-        painter.setFont(mono(size, bold=primary))
+        painter.setFont(chrome(size, bold=primary))
         painter.setPen(self._tint(ACCENT if (primary or hot) else TEXT, alpha))
-        painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), label)
+        painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), cased(label))
 
     # -- leaf panel ----------------------------------------------------------
 
@@ -1708,18 +1889,20 @@ class NavigatorWindow(QWidget):
 
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fade(PANEL_FILL, smoothstep(0.05, 0.6, t) * alpha))
-        painter.drawRoundedRect(rect, corner, corner)
+        plate(painter, rect, corner)
 
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(fade(ACCENT, alpha), STROKE_PANEL))
-        painter.drawRoundedRect(rect, corner, corner)
+        painter.setPen(QPen(fade(ACCENT, alpha), stroke(STROKE_PANEL)))
+        plate(painter, rect, corner)
 
         # The label rides the outline out, fading as the frame opens up.
         vanish = 1.0 - smoothstep(0.0, 0.32, t)
         if vanish > 0.0:
-            painter.setFont(mono(15, bold=True))
+            painter.setFont(chrome(15, bold=True))
             painter.setPen(fade(ACCENT, vanish * alpha))
-            painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), node.name)
+            painter.drawText(
+                rect, int(Qt.AlignmentFlag.AlignCenter), cased(node.name)
+            )
 
         body = smoothstep(0.68, 1.0, t) * alpha
         if body > 0.0 and self._panel is not None:
@@ -1767,17 +1950,17 @@ class NavigatorWindow(QWidget):
         # is invisible. As it condenses it becomes a solid accent mark.
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(blend(CARD_FILL, ACCENT, solid))
-        painter.drawRoundedRect(rect, corner, corner)
+        plate(painter, rect, corner)
 
         if solid < 0.999:
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(
                 QPen(
                     fade(blend(CARD_EDGE, ACCENT, solid), 1.0 - solid),
-                    lerp(float(CARD_BORDER_W), STROKE_BAR, solid),
+                    lerp(float(CARD_BORDER_W), stroke(STROKE_BAR), solid),
                 )
             )
-            painter.drawRoundedRect(rect, corner, corner)
+            plate(painter, rect, corner)
 
         prompt = arrival
         if prompt <= 0.0:
@@ -1852,9 +2035,9 @@ class NavigatorWindow(QWidget):
 
         widths = []
         for badge in badges:
-            painter.setFont(mono(10))
-            width = painter.fontMetrics().horizontalAdvance(badge.label) + 7.0
-            painter.setFont(mono(12, bold=True))
+            painter.setFont(chrome(10))
+            width = painter.fontMetrics().horizontalAdvance(cased(badge.label)) + 7.0
+            painter.setFont(chrome(12, bold=True))
             width += (
                 painter.fontMetrics().horizontalAdvance(badge.value) + STATUS_PAD * 2.0
             )
@@ -1882,7 +2065,7 @@ class NavigatorWindow(QWidget):
             return
 
         gap, pad, height = STATUS_GAP, STATUS_PAD, 22.0
-        label_font, value_font = mono(10), mono(12, bold=True)
+        label_font, value_font = chrome(10), chrome(12, bold=True)
         y = 20.0
 
         for badge, width in zip(badges, widths):
@@ -1890,14 +2073,14 @@ class NavigatorWindow(QWidget):
             rect = QRectF(x, y, width, height)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(fade(tone, 0.12 * alpha))
-            painter.drawRoundedRect(rect, 4.0, 4.0)
+            plate(painter, rect, 4.0)
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
             baseline = y + height / 2.0 + 4.0
             painter.setFont(label_font)
             painter.setPen(fade(MUTED, 0.95 * alpha))
-            painter.drawText(QPointF(x + pad, baseline), badge.label)
-            offset = painter.fontMetrics().horizontalAdvance(badge.label) + 7.0
+            painter.drawText(QPointF(x + pad, baseline), cased(badge.label))
+            offset = painter.fontMetrics().horizontalAdvance(cased(badge.label)) + 7.0
             painter.setFont(value_font)
             painter.setPen(fade(tone, alpha))
             painter.drawText(QPointF(x + pad + offset, baseline), badge.value)
@@ -1906,10 +2089,10 @@ class NavigatorWindow(QWidget):
     def _paint_chrome(self, painter: QPainter, alpha: float) -> None:
         self._paint_status(painter, alpha)
 
-        painter.setFont(mono(12))
+        painter.setFont(chrome(12))
         trail = "/".join(n.name for n in self._trail)
         painter.setPen(self._tint(MUTED, 0.9 * alpha))
-        painter.drawText(QPointF(26.0, 34.0), f"sentinel /{trail}")
+        painter.drawText(QPointF(26.0, 34.0), cased(f"sentinel /{trail}"))
 
         if self._phase == Phase.IDLE:
             hint = "click or tab+enter  open   ·   esc  back"
@@ -1922,5 +2105,5 @@ class NavigatorWindow(QWidget):
             painter.drawText(
                 QRectF(0.0, 20.0, self.width() - 26.0, 20.0),
                 int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
-                hint,
+                cased(hint),
             )

@@ -27,6 +27,15 @@ class Option:
 
 
 SCHEMA: tuple[Option, ...] = (
+    # The keys are spelled out rather than read from `theme.THEMES`: that module
+    # takes its starting value from these settings, and importing it here would
+    # close the loop. `theme` checks the two lists agree at import instead.
+    Option(
+        "theme", "Theme",
+        "The whole look — shapes and motion, not just colours.",
+        "choice", "phosphor",
+        (("phosphor", "phosphor"), ("mechanical", "mechanical")),
+    ),
     Option(
         "accent", "Accent colour", "Recolours the entire interface.",
         "choice", "#39d353",
@@ -36,6 +45,8 @@ SCHEMA: tuple[Option, ...] = (
             ("#ff7b39", "amber"),
             ("#c678dd", "magenta"),
             ("#e6e8ee", "white"),
+            ("#bf0a30", "crimson"),
+            ("#5c8ed6", "steel blue"),
         ),
     ),
     Option(

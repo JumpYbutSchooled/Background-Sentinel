@@ -1,16 +1,19 @@
 """Tray icon drawn at runtime.
 
-Avoids shipping a .ico for now. Replace with a real asset during the polish
-pass; keep the signature so nothing else has to change.
+Avoids shipping a .ico. It follows the theme like everything else — the plate
+is cut the way the theme cuts plates and takes its colours from the palette —
+so the icon in the tray is the same object as the interface it summons.
+
+The tray does not repaint itself when the theme changes, so `sentinel_icon()`
+is called again from there; the drawing here is stateless and cheap.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QIcon, QPainter, QPen, QPixmap
 
-BACKGROUND = QColor("#12141a")
-ACCENT = QColor("#39d353")
+from .paint import ACCENT, CARD_FILL, chrome, plate, stroke
 
 
 def _pixmap(size: int) -> QPixmap:
@@ -21,9 +24,10 @@ def _pixmap(size: int) -> QPixmap:
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
     radius = size * 0.18
+    rect = QRectF(0, 0, size, size)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(BACKGROUND)
-    painter.drawRoundedRect(QRectF(0, 0, size, size), radius, radius)
+    painter.setBrush(CARD_FILL)
+    plate(painter, rect, radius)
 
     painter.setPen(
         QPen(
@@ -34,11 +38,17 @@ def _pixmap(size: int) -> QPixmap:
             Qt.PenJoinStyle.RoundJoin,
         )
     )
-    font = QFont("Consolas")
-    font.setPixelSize(int(size * 0.55))
-    font.setBold(True)
+    # A hairline of the theme's own edge, so a chamfered icon reads as cut
+    # rather than as a rectangle that lost its corners.
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    inset = max(0.5, size * 0.03)
+    painter.setPen(QPen(ACCENT, stroke(max(1.0, size * 0.045))))
+    plate(painter, rect.adjusted(inset, inset, -inset, -inset), radius)
+
+    font = chrome(int(size * 0.55), bold=True)
     painter.setFont(font)
-    painter.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, ">_")
+    painter.setPen(ACCENT)
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, ">_")
 
     painter.end()
     return pixmap

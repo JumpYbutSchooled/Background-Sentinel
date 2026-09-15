@@ -55,6 +55,13 @@ class Tray(QObject):
         self._menu = menu  # keep alive
         self.icon.setContextMenu(menu)
         self.icon.activated.connect(self._on_activated)
+        # The icon is drawn from the palette, and nothing redraws a tray icon
+        # on its own. Both the accent and the theme change what it looks like.
+        settings.listeners.append(self._on_setting_changed)
+
+    def _on_setting_changed(self, key: str, value: object) -> None:
+        if key in ("accent", "theme"):
+            self.icon.setIcon(sentinel_icon())
 
     def show(self) -> None:
         self.icon.show()

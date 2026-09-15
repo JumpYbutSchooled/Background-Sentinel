@@ -9,13 +9,15 @@ transcript; the submitted/hide behaviour here should survive that change.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QCursor,
     QGuiApplication,
     QKeyEvent,
     QPainter,
+    QPen,
     QPixmap,
     QRegion,
     QTextCursor,
@@ -37,7 +39,17 @@ from ..transcript import transcript
 from .foreground import force_foreground
 from .highlight import CommandHighlighter
 from .motion import Flicker, Ticker, chase, settled
-from .paint import ACCENT, advance_accent, mono
+from .paint import (
+    ACCENT,
+    CARD_EDGE,
+    CARD_FILL,
+    MUTED,
+    TEXT,
+    advance_accent,
+    hatch,
+    mono,
+    plate,
+)
 from .scrollback import ScrollbackView
 from .suggest import Completer, SuggestionList
 
@@ -49,8 +61,8 @@ HIDE_ON_FOCUS_LOSS = "hide_on_blur"
 
 # The card's look is shared with the navigator, whose closing animation has to
 # land on exactly this shape and these colours or the handover visibly snaps.
-CARD_BG = "#0f1116"
-CARD_BORDER = "#2a2f3a"
+# The two colours live in the palette rather than here, so a theme change
+# rewrites them in place and both windows are still holding the same object.
 CARD_BORDER_W = 1
 CARD_CORNER = 10
 
@@ -110,17 +122,22 @@ _FONT = '"JetBrains Mono", "Cascadia Mono", Consolas, monospace'
 
 
 def build_stylesheet() -> str:
-    """Rebuilt whenever the accent changes, so the prompt follows the theme.
+    """Rebuilt whenever the accent or the theme changes.
 
     The accent was baked in as a literal here, which is why recolouring left
-    the closed command line green while everything else had moved on.
+    the closed command line green while everything else had moved on. The rest
+    of the colours had the same problem the moment there was a second theme.
+
+    The command line itself stays monospace in every theme, and that is not an
+    oversight. The scroll-back prints tables padded with spaces; a condensed
+    proportional face would take the columns apart. The theme's own face is for
+    chrome — labels, headings, the status line — where nothing has to line up.
     """
     accent = ACCENT.name()
     return f"""
 #card {{
-    background-color: {CARD_BG};
-    border: {CARD_BORDER_W}px solid {CARD_BORDER};
-    border-radius: {CARD_CORNER}px;
+    background: transparent;
+    border: none;
 }}
 #prompt {{
     color: {accent};
@@ -131,18 +148,49 @@ def build_stylesheet() -> str:
 #input {{
     background: transparent;
     border: none;
-    color: #e6e8ee;
+    color: {TEXT.name()};
     font-family: {_FONT};
     font-size: 15px;
     selection-background-color: {accent};
-    selection-color: {CARD_BG};
+    selection-color: {CARD_FILL.name()};
 }}
 #echo {{
-    color: #5c6370;
+    color: {MUTED.name()};
     font-family: {_FONT};
     font-size: 12px;
 }}
 """
+
+
+class Card(QFrame):
+    """The card's fill and border, drawn rather than styled.
+
+    A stylesheet can only round a corner, and the mechanical theme cuts its
+    corners off straight. Both shapes come out of `plate()`, which is also what
+    the navigator's outro draws its final frames with — the handover depends on
+    the two agreeing, and the surest way to make them agree is one function.
+
+    The border width still comes out of the layout's margins rather than out of
+    a QSS border, so `CARD_CONTENT_X` means what it has always meant.
+    """
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Inset by half the stroke, so the outline lands inside the widget
+        # instead of being clipped in half by its own edge.
+        inset = CARD_BORDER_W / 2.0
+        rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(CARD_FILL)
+        plate(painter, rect, float(CARD_CORNER))
+
+        hatch(painter, rect, float(CARD_CORNER), ACCENT, 0.5)
+
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(CARD_EDGE, float(CARD_BORDER_W)))
+        plate(painter, rect, float(CARD_CORNER))
 
 
 def _shape(line: str) -> str:
@@ -363,13 +411,18 @@ class PopupWindow(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        card = QFrame(self)
+        card = Card(self)
         card.setObjectName("card")
         outer.addWidget(card)
+        self._card = card
 
         self._card_layout = card_layout = QVBoxLayout(card)
+        # The border is in the margin now that the card paints its own. A styled
+        # QFrame used to lay its children out inside the QSS border, and the
+        # content column has to start in the same place it always did.
         card_layout.setContentsMargins(
-            CARD_PAD_X, CARD_PAD_TOP, CARD_PAD_X, CARD_PAD_BOTTOM
+            CARD_BORDER_W + CARD_PAD_X, CARD_BORDER_W + CARD_PAD_TOP,
+            CARD_BORDER_W + CARD_PAD_X, CARD_BORDER_W + CARD_PAD_BOTTOM,
         )
         card_layout.setSpacing(CARD_SPACING)
 
@@ -745,8 +798,12 @@ class PopupWindow(QWidget):
         self._move_to_active_screen()
 
     def _on_setting_changed(self, key: str, value: object) -> None:
-        if key == "accent":
+        if key in ("accent", "theme"):
+            # A theme change rewrites the palette these are built from, and the
+            # card's own shape with it. Everything the card draws is read at
+            # paint time, so one repaint is the whole of it.
             self._recolour()
+            self._card.update()
 
     def _recolour(self) -> None:
         """Take the accent's current value into the stylesheet.
